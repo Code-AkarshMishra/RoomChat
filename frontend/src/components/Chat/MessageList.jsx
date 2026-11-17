@@ -14,6 +14,7 @@ export default function MessageList({
   onReact,
   onBurnNoteView,
   onImageClick,
+  onOpenInfo,
 }) {
   const bottomRef = useRef(null);
   const containerRef = useRef(null);
@@ -57,6 +58,7 @@ export default function MessageList({
             onReact={onReact}
             onBurnNoteView={onBurnNoteView}
             onImageClick={onImageClick}
+            onOpenInfo={onOpenInfo}
           />
         );
       })}

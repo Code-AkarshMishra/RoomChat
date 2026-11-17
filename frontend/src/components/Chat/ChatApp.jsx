@@ -6,6 +6,7 @@ import LiveCameraModal from '../Modals/LiveCameraModal';
 import ImageLightboxModal from '../Modals/ImageLightboxModal';
 import SettingsModal from '../Modals/SettingsModal';
 import CallModal from '../Modals/CallModal';
+import MessageInfoModal from '../Modals/MessageInfoModal';
 import { 
   apiGetMessages, 
   apiBurnNoteAction, 
@@ -37,11 +38,13 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
 
   // WebRTC Call state
   const [callState, setCallState] = useState(null);
+  const [activeSocket, setActiveSocket] = useState(null);
 
   // Modals state
   const [cameraOpen, setCameraOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [lightboxImageUrl, setLightboxImageUrl] = useState(null);
+  const [infoModalMessage, setInfoModalMessage] = useState(null);
 
   // Ref to track if media picker, camera, or call is currently open (to prevent accidental panic exit on mobile)
   const isBusyRef = useRef(false);
@@ -131,10 +134,11 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
   useEffect(() => {
     const socket = initSocket();
     if (!socket) return;
+    setActiveSocket(socket);
 
     // Presence & Last Seen updates
     socket.on('presence_status', (data) => {
-      if (data.userId === partner?.userId) {
+      if (data.userId?.toLowerCase() === partner?.userId?.toLowerCase()) {
         setIsPartnerOnline(Boolean(data.isOnline));
         if (data.lastSeen !== undefined) {
           setPartner((prev) => ({ ...prev, lastSeen: data.lastSeen }));
@@ -147,6 +151,9 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
         setPartner((prev) => ({ ...prev, lastSeen: data.partnerLastSeen }));
       }
     });
+
+    // Mark messages as read on connect
+    socket.emit('mark_all_read');
 
     // Incoming new message
     socket.on('receive_message', (newMsg) => {
@@ -165,8 +172,8 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
         return [...prev, newMsg];
       });
 
-      // If message is from partner:
-      if (newMsg.sender === partner?.userId) {
+      // If message is received from partner (I am the receiver)
+      if (newMsg.sender?.toLowerCase() !== currentUser.userId?.toLowerCase()) {
         socket.emit('message_delivered', { messageId: newMsg._id });
         socket.emit('message_read', { messageId: newMsg._id });
 
@@ -231,10 +238,33 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
       }));
     });
 
-    // Status ticks (sent -> delivered -> read)
-    socket.on('message_status_updated', ({ messageId, status }) => {
+    // Single message status tick update (sent -> delivered -> read)
+    socket.on('message_status_updated', ({ messageId, status, readAt, deliveredAt }) => {
       setMessages((prev) =>
-        prev.map((m) => (m._id === messageId ? { ...m, status } : m))
+        prev.map((m) => {
+          if (m._id === messageId || m.clientTempId === messageId) {
+            const updates = { status };
+            if (readAt) updates.readAt = readAt;
+            if (deliveredAt) updates.deliveredAt = deliveredAt;
+            return { ...m, ...updates };
+          }
+          return m;
+        })
+      );
+    });
+
+    // Bulk status update (e.g. partner comes online -> all delivered; partner reads chat -> all read)
+    socket.on('messages_status_bulk_update', ({ receiver, status, readAt, deliveredAt }) => {
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.receiver?.toLowerCase() === receiver?.toLowerCase()) {
+            const updates = { status };
+            if (readAt && (status === 'read' || !m.readAt)) updates.readAt = readAt;
+            if (deliveredAt && !m.deliveredAt) updates.deliveredAt = deliveredAt;
+            return { ...m, ...updates };
+          }
+          return m;
+        })
       );
     });
 
@@ -357,6 +387,10 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
 
   // Start outgoing call
   const handleStartCall = (callType) => {
+    if (!isPartnerOnline) {
+      alert(`${partner?.displayName || 'Partner'} is currently offline. Calls can only connect when your partner is online.`);
+      return;
+    }
     setCallState({
       mode: 'outgoing',
       callType: callType || 'video',
@@ -395,6 +429,7 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
         onReact={handleReactMessage}
         onBurnNoteView={handleBurnNoteView}
         onImageClick={(url) => setLightboxImageUrl(url)}
+        onOpenInfo={(msg) => setInfoModalMessage(msg)}
       />
 
       {/* Fixed Bottom Message Input Toolbar */}
@@ -413,7 +448,7 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
         callState={callState}
         partner={partner}
         currentUser={currentUser}
-        socket={getSocket()}
+        socket={activeSocket || getSocket()}
         onClose={() => setCallState(null)}
       />
 
@@ -440,6 +475,13 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
       <ImageLightboxModal
         imageUrl={lightboxImageUrl}
         onClose={() => setLightboxImageUrl(null)}
+      />
+
+      {/* WhatsApp-Style Message Info Modal */}
+      <MessageInfoModal
+        isOpen={Boolean(infoModalMessage)}
+        message={infoModalMessage}
+        onClose={() => setInfoModalMessage(null)}
       />
     </div>
   );

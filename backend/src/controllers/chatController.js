@@ -35,7 +35,28 @@ const getMessages = async (req, res) => {
       messages = memoryStore.messages.slice(-limit);
     }
 
+    // Auto mark received messages as delivered/read
+    const fetchNow = new Date();
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await Message.updateMany(
+          { receiver: userId, sender: partnerId, status: 'sent' },
+          { status: 'delivered', deliveredAt: fetchNow }
+        );
+      } catch {}
+    }
+    memoryStore.messages.forEach((m) => {
+      if (m.receiver === userId && m.sender === partnerId && m.status === 'sent') {
+        m.status = 'delivered';
+        m.deliveredAt = fetchNow;
+      }
+    });
+
     const safeMessages = messages.map((m) => {
+      if (m.receiver === userId && m.sender === partnerId && m.status === 'sent') {
+        m.status = 'delivered';
+        m.deliveredAt = fetchNow;
+      }
       if (m.isBurnNote && m.isBurned) {
         return {
           ...m,

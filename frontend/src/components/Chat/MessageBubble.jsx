@@ -10,7 +10,8 @@ import {
   CornerUpLeft, 
   Trash2, 
   Smile, 
-  Volume2 
+  Volume2,
+  Info
 } from 'lucide-react';
 
 const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '🔥'];
@@ -24,6 +25,7 @@ export default function MessageBubble({
   onReact,
   onBurnNoteView,
   onImageClick,
+  onOpenInfo,
 }) {
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [audioProgress, setAudioProgress] = useState(0);
@@ -229,6 +231,17 @@ export default function MessageBubble({
           <CornerUpLeft className="w-3.5 h-3.5" />
         </button>
 
+        {/* Message Info */}
+        {isOwn && onOpenInfo && (
+          <button
+            onClick={() => onOpenInfo(message)}
+            className="p-1 rounded-full bg-[#1e1948]/80 hover:bg-[#28225e] text-violet-300 transition-colors"
+            title="Message Info"
+          >
+            <Info className="w-3.5 h-3.5" />
+          </button>
+        )}
+
         {/* Delete Message */}
         {isOwn && (
           <button
@@ -404,11 +417,19 @@ export default function MessageBubble({
         <div className="flex items-center justify-end gap-1.5 mt-1 text-[10px] opacity-80 select-none">
           <span className="text-violet-200/90">{formatTime(message.createdAt)}</span>
           {isOwn && (
-            <span>
-              {message.status === 'sent' && <Check className="w-3.5 h-3.5 text-violet-200/70" />}
-              {message.status === 'delivered' && <CheckCheck className="w-3.5 h-3.5 text-violet-200/70" />}
-              {message.status === 'read' && <CheckCheck className="w-3.5 h-3.5 text-cyan-300 font-bold" />}
-            </span>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (onOpenInfo) onOpenInfo(message);
+              }}
+              className="cursor-pointer hover:scale-115 transition-transform ml-0.5"
+              title="Click for message info"
+            >
+              {message.status === 'sent' && <Check className="w-3.5 h-3.5 text-violet-300/60" />}
+              {message.status === 'delivered' && <CheckCheck className="w-3.5 h-3.5 text-violet-300/80" />}
+              {message.status === 'read' && <CheckCheck className="w-3.5 h-3.5 text-cyan-400 font-bold drop-shadow-[0_0_3px_#22d3ee]" />}
+            </button>
           )}
         </div>
       </div>

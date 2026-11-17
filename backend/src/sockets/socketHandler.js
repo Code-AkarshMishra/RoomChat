@@ -4,7 +4,7 @@ const Message = require('../models/Message');
 const User = require('../models/User');
 const { memoryStore } = require('../controllers/authController');
 
-// Map of online connected sockets: userId -> Set of socket IDs
+// Map of online connected sockets: userId (lowercase) -> Set of socket IDs
 const onlineUsers = new Map();
 
 const getCoupleRoomId = (userA, userB) => {
@@ -23,7 +23,12 @@ const setupSocketHandlers = (io) => {
       return next(new Error('Authentication failed: Invalid session.'));
     }
 
-    socket.user = decoded;
+    // Normalize user IDs to lowercase
+    socket.user = {
+      ...decoded,
+      userId: decoded.userId?.toLowerCase(),
+      partnerId: decoded.partnerId?.toLowerCase(),
+    };
     next();
   });
 
@@ -38,7 +43,7 @@ const setupSocketHandlers = (io) => {
 
     socket.join(roomId);
 
-    // Update lastSeen and notify room
+    // Dynamic check: is partner online right now?
     const isPartnerOnline = onlineUsers.has(partnerId) && onlineUsers.get(partnerId).size > 0;
 
     // Fetch partner's actual last seen and last login
@@ -56,7 +61,7 @@ const setupSocketHandlers = (io) => {
       partnerLastLogin = p.lastLogin || null;
     }
 
-    // 1. Send to newly connected socket their partner's presence
+    // 1. Send current partner presence to connecting socket
     socket.emit('presence_status', {
       userId: partnerId,
       isOnline: isPartnerOnline,
@@ -66,7 +71,7 @@ const setupSocketHandlers = (io) => {
       partnerLastSeen: partnerLastSeen,
     });
 
-    // 2. Notify partner that this user is now online
+    // 2. Broadcast to partner that this user has connected and is now online
     socket.to(roomId).emit('presence_status', {
       userId: userId,
       isOnline: true,
@@ -74,6 +79,32 @@ const setupSocketHandlers = (io) => {
       partnerOnline: true,
       partnerLastSeen: null,
     });
+
+    // 3. AUTOMATIC DELIVERY: When userId connects, all pending messages sent to userId become 'delivered'
+    const now = new Date();
+    try {
+      if (mongoose.connection.readyState === 1) {
+        await Message.updateMany(
+          { receiver: userId, sender: partnerId, status: 'sent' },
+          { status: 'delivered', deliveredAt: now }
+        );
+      }
+      memoryStore.messages.forEach((m) => {
+        if (m.receiver === userId && m.sender === partnerId && m.status === 'sent') {
+          m.status = 'delivered';
+          m.deliveredAt = now;
+        }
+      });
+
+      // Notify the room so the sender's UI updates single tick -> double tick
+      io.to(roomId).emit('messages_status_bulk_update', {
+        receiver: userId,
+        status: 'delivered',
+        deliveredAt: now,
+      });
+    } catch (e) {
+      console.warn('Auto delivery update error:', e.message);
+    }
 
     // Latency Ping
     socket.on('ping_latency', (clientTimestamp, callback) => {
@@ -85,7 +116,7 @@ const setupSocketHandlers = (io) => {
       }
     });
 
-    // 1. Send Message (with replyTo support)
+    // 1. Send Message
     socket.on('send_message', async (messageData, ackCallback) => {
       try {
         const {
@@ -100,6 +131,10 @@ const setupSocketHandlers = (io) => {
           clientTempId,
         } = messageData;
 
+        // Dynamic online check at the moment message is sent
+        const partnerIsOnlineNow = onlineUsers.has(partnerId) && onlineUsers.get(partnerId).size > 0;
+        const msgTime = new Date();
+
         const newMsgPayload = {
           sender: userId,
           receiver: partnerId,
@@ -110,14 +145,15 @@ const setupSocketHandlers = (io) => {
           mediaDuration: mediaDuration || null,
           replyTo: replyTo || null,
           reactions: [],
-          status: isPartnerOnline ? 'delivered' : 'sent',
-          deliveredAt: isPartnerOnline ? new Date() : null,
+          status: partnerIsOnlineNow ? 'delivered' : 'sent',
+          deliveredAt: partnerIsOnlineNow ? msgTime : null,
+          readAt: null,
           isBurnNote: Boolean(isBurnNote),
           burnAfterSeconds: burnAfterSeconds || 10,
           viewedAt: null,
           isBurned: false,
           isDeleted: false,
-          createdAt: new Date(),
+          createdAt: msgTime,
         };
 
         let savedMessage = null;
@@ -143,6 +179,7 @@ const setupSocketHandlers = (io) => {
           savedMessage.clientTempId = clientTempId;
         }
 
+        // Broadcast to couple room
         io.to(roomId).emit('receive_message', savedMessage);
 
         if (typeof ackCallback === 'function') {
@@ -156,7 +193,71 @@ const setupSocketHandlers = (io) => {
       }
     });
 
-    // 2. Delete Message for Everyone
+    // 2. Mark All Messages as Read (Turns delivered double ticks -> blue ticks)
+    socket.on('mark_all_read', async () => {
+      const readTime = new Date();
+      try {
+        if (mongoose.connection.readyState === 1) {
+          await Message.updateMany(
+            { receiver: userId, sender: partnerId, status: { $ne: 'read' } },
+            { status: 'read', readAt: readTime, deliveredAt: readTime }
+          );
+        }
+        memoryStore.messages.forEach((m) => {
+          if (m.receiver === userId && m.sender === partnerId && m.status !== 'read') {
+            m.status = 'read';
+            m.readAt = readTime;
+            if (!m.deliveredAt) m.deliveredAt = readTime;
+          }
+        });
+
+        // Broadcast to sender that messages were read -> turn blue ticks!
+        io.to(roomId).emit('messages_status_bulk_update', {
+          receiver: userId,
+          status: 'read',
+          readAt: readTime,
+        });
+      } catch (e) {
+        console.warn('Mark all read error:', e.message);
+      }
+    });
+
+    // 3. Individual Message Delivery & Read Ticks
+    socket.on('message_delivered', async ({ messageId }) => {
+      try {
+        const dTime = new Date();
+        if (mongoose.connection.readyState === 1) {
+          try {
+            await Message.findByIdAndUpdate(messageId, { status: 'delivered', deliveredAt: dTime });
+          } catch {}
+        }
+        const m = memoryStore.messages.find((item) => item._id?.toString() === messageId);
+        if (m && m.status === 'sent') {
+          m.status = 'delivered';
+          m.deliveredAt = dTime;
+        }
+        io.to(roomId).emit('message_status_updated', { messageId, status: 'delivered', deliveredAt: dTime });
+      } catch (err) {}
+    });
+
+    socket.on('message_read', async ({ messageId }) => {
+      try {
+        const rTime = new Date();
+        if (mongoose.connection.readyState === 1) {
+          try {
+            await Message.findByIdAndUpdate(messageId, { status: 'read', readAt: rTime });
+          } catch {}
+        }
+        const m = memoryStore.messages.find((item) => item._id?.toString() === messageId);
+        if (m) {
+          m.status = 'read';
+          m.readAt = rTime;
+        }
+        io.to(roomId).emit('message_status_updated', { messageId, status: 'read', readAt: rTime });
+      } catch (err) {}
+    });
+
+    // 4. Delete Message for Everyone
     socket.on('delete_message', async ({ messageId }) => {
       try {
         if (mongoose.connection.readyState === 1) {
@@ -182,7 +283,7 @@ const setupSocketHandlers = (io) => {
       }
     });
 
-    // 3. Clear Entire Chat
+    // 5. Clear Entire Chat
     socket.on('clear_chat', async () => {
       try {
         if (mongoose.connection.readyState === 1) {
@@ -202,7 +303,7 @@ const setupSocketHandlers = (io) => {
       }
     });
 
-    // 4. Message Reaction
+    // 6. Message Reactions
     socket.on('react_message', async ({ messageId, emoji }) => {
       try {
         let reactions = [];
@@ -248,49 +349,13 @@ const setupSocketHandlers = (io) => {
       }
     });
 
-    // 5. Message Delivery & Read Ticks
-    socket.on('message_delivered', async ({ messageId }) => {
-      try {
-        if (mongoose.connection.readyState === 1) {
-          try {
-            await Message.findByIdAndUpdate(messageId, { status: 'delivered', deliveredAt: new Date() });
-          } catch {}
-        }
-        const m = memoryStore.messages.find((item) => item._id?.toString() === messageId);
-        if (m && m.status === 'sent') m.status = 'delivered';
-        io.to(roomId).emit('message_status_updated', { messageId, status: 'delivered' });
-      } catch (err) {}
-    });
-
-    socket.on('message_read', async ({ messageId }) => {
-      try {
-        if (mongoose.connection.readyState === 1) {
-          try {
-            await Message.findByIdAndUpdate(messageId, { status: 'read', readAt: new Date() });
-          } catch {}
-        }
-        const m = memoryStore.messages.find((item) => item._id?.toString() === messageId);
-        if (m) m.status = 'read';
-        io.to(roomId).emit('message_status_updated', { messageId, status: 'read' });
-      } catch (err) {}
-    });
-
-    // 6. Typing Indicators
+    // 7. Typing Indicators
     socket.on('typing_start', () => {
       socket.to(roomId).emit('partner_typing', { userId, isTyping: true });
     });
 
     socket.on('typing_stop', () => {
       socket.to(roomId).emit('partner_typing', { userId, isTyping: false });
-    });
-
-    // 7. Vibe & Profile Broadcast
-    socket.on('broadcast_vibe', (vibeData) => {
-      socket.to(roomId).emit('partner_vibe_updated', { userId, vibeStatus: vibeData });
-    });
-
-    socket.on('broadcast_profile_updated', (profileData) => {
-      socket.to(roomId).emit('partner_profile_updated', profileData);
     });
 
     // 8. Burn note expired
@@ -313,47 +378,88 @@ const setupSocketHandlers = (io) => {
       } catch (err) {}
     });
 
-    // 9. WebRTC Calling Signaling (Voice & Video)
+    // 9. WebRTC Calling Signaling (Voice & Video) with direct socket delivery
     socket.on('call_user', (payload) => {
-      socket.to(roomId).emit('incoming_call', {
+      const partnerSockets = onlineUsers.get(partnerId);
+      const isPartnerInRoom = partnerSockets && partnerSockets.size > 0;
+      if (!isPartnerInRoom) {
+        socket.emit('call_failed', { reason: 'partner_offline' });
+        return;
+      }
+
+      console.log(`[WebRTC] ${userId} calling ${partnerId} (${payload.callType || 'video'})`);
+      const callData = {
         callerId: userId,
         callerName: displayName,
-        callType: payload.callType || 'video', // 'video' | 'audio'
+        callType: payload.callType || 'video',
         offer: payload.offer,
+      };
+
+      // Emit to room AND directly to all partner sockets
+      socket.to(roomId).emit('incoming_call', callData);
+      partnerSockets.forEach((sId) => {
+        io.to(sId).emit('incoming_call', callData);
       });
     });
 
     socket.on('answer_call', (payload) => {
-      socket.to(roomId).emit('call_answered', {
+      console.log(`[WebRTC] ${userId} answered call from ${partnerId}`);
+      const answerData = {
         responderId: userId,
         answer: payload.answer,
-      });
+      };
+
+      socket.to(roomId).emit('call_answered', answerData);
+      const partnerSockets = onlineUsers.get(partnerId);
+      if (partnerSockets) {
+        partnerSockets.forEach((sId) => io.to(sId).emit('call_answered', answerData));
+      }
     });
 
     socket.on('ice_candidate', (payload) => {
-      socket.to(roomId).emit('ice_candidate', {
+      const candidateData = {
         senderId: userId,
         candidate: payload.candidate,
-      });
+      };
+
+      socket.to(roomId).emit('ice_candidate', candidateData);
+      const partnerSockets = onlineUsers.get(partnerId);
+      if (partnerSockets) {
+        partnerSockets.forEach((sId) => io.to(sId).emit('ice_candidate', candidateData));
+      }
     });
 
     socket.on('reject_call', (payload) => {
-      socket.to(roomId).emit('call_rejected', {
+      console.log(`[WebRTC] ${userId} rejected call from ${partnerId}`);
+      const rejectData = {
         by: userId,
         reason: payload?.reason || 'declined',
-      });
+      };
+
+      socket.to(roomId).emit('call_rejected', rejectData);
+      const partnerSockets = onlineUsers.get(partnerId);
+      if (partnerSockets) {
+        partnerSockets.forEach((sId) => io.to(sId).emit('call_rejected', rejectData));
+      }
     });
 
     socket.on('end_call', (payload) => {
-      socket.to(roomId).emit('call_ended', {
+      console.log(`[WebRTC] ${userId} ended call with ${partnerId}`);
+      const endData = {
         by: userId,
         reason: payload?.reason || 'ended',
-      });
+      };
+
+      socket.to(roomId).emit('call_ended', endData);
+      const partnerSockets = onlineUsers.get(partnerId);
+      if (partnerSockets) {
+        partnerSockets.forEach((sId) => io.to(sId).emit('call_ended', endData));
+      }
     });
 
     // 10. Disconnect Handler (Record Last Seen accurately)
     socket.on('disconnect', async () => {
-      const now = new Date();
+      const disconnectTime = new Date();
       if (onlineUsers.has(userId)) {
         const userSockets = onlineUsers.get(userId);
         userSockets.delete(socket.id);
@@ -363,12 +469,12 @@ const setupSocketHandlers = (io) => {
           // Update lastSeen in DB / memory
           if (mongoose.connection.readyState === 1) {
             try {
-              await User.findOneAndUpdate({ userId }, { lastSeen: now, lastActive: now });
+              await User.findOneAndUpdate({ userId }, { lastSeen: disconnectTime, lastActive: disconnectTime });
             } catch {}
           }
           if (memoryStore.users.has(userId)) {
-            memoryStore.users.get(userId).lastSeen = now;
-            memoryStore.users.get(userId).lastActive = now;
+            memoryStore.users.get(userId).lastSeen = disconnectTime;
+            memoryStore.users.get(userId).lastActive = disconnectTime;
           }
 
           // Emit to partner in roomId
@@ -376,8 +482,8 @@ const setupSocketHandlers = (io) => {
             userId,
             isOnline: false,
             partnerOnline: false,
-            lastSeen: now,
-            partnerLastSeen: now,
+            lastSeen: disconnectTime,
+            partnerLastSeen: disconnectTime,
           });
         }
       }

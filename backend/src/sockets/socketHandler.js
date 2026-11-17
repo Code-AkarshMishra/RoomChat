@@ -3,6 +3,7 @@ const { verifySocketToken } = require('../middleware/auth');
 const Message = require('../models/Message');
 const User = require('../models/User');
 const { memoryStore } = require('../controllers/authController');
+const { sendPushNotification } = require('../utils/webPush');
 
 // Map of online connected sockets: userId (lowercase) -> Set of socket IDs
 const onlineUsers = new Map();
@@ -80,28 +81,42 @@ const setupSocketHandlers = (io) => {
       partnerLastSeen: null,
     });
 
-    // 3. AUTOMATIC DELIVERY: When userId connects, all pending messages sent to userId become 'delivered'
+    // 3. AUTOMATIC DELIVERY: When userId connects, all pending 'sent' messages addressed to userId become 'delivered'
+    // IMPORTANT: Only update DB and notify if the PARTNER (original sender) is currently online,
+    // so the sender's UI can update from single grey tick -> double grey tick.
     const now = new Date();
     try {
+      let deliveredCount = 0;
       if (mongoose.connection.readyState === 1) {
-        await Message.updateMany(
+        const result = await Message.updateMany(
           { receiver: userId, sender: partnerId, status: 'sent' },
           { status: 'delivered', deliveredAt: now }
         );
+        deliveredCount = result.modifiedCount || 0;
       }
       memoryStore.messages.forEach((m) => {
         if (m.receiver === userId && m.sender === partnerId && m.status === 'sent') {
           m.status = 'delivered';
           m.deliveredAt = now;
+          deliveredCount++;
         }
       });
 
-      // Notify the room so the sender's UI updates single tick -> double tick
-      io.to(roomId).emit('messages_status_bulk_update', {
-        receiver: userId,
-        status: 'delivered',
-        deliveredAt: now,
-      });
+      // Only notify partner (the SENDER) if they are currently online
+      // so their UI updates single tick -> double grey tick
+      if (deliveredCount > 0 && isPartnerOnline) {
+        // Send only to the partner's sockets (not to this user's own socket)
+        const partnerSocketIds = onlineUsers.get(partnerId);
+        if (partnerSocketIds) {
+          partnerSocketIds.forEach((sId) => {
+            io.to(sId).emit('messages_status_bulk_update', {
+              receiver: userId,
+              status: 'delivered',
+              deliveredAt: now,
+            });
+          });
+        }
+      }
     } catch (e) {
       console.warn('Auto delivery update error:', e.message);
     }
@@ -181,6 +196,24 @@ const setupSocketHandlers = (io) => {
 
         // Broadcast to couple room
         io.to(roomId).emit('receive_message', savedMessage);
+
+        // 🔔 Web Push: If partner is offline, send a push notification so they know even with tab closed
+        if (!partnerIsOnlineNow) {
+          const previewText = newMsgPayload.text
+            ? (newMsgPayload.text.length > 60 ? newMsgPayload.text.slice(0, 57) + '...' : newMsgPayload.text)
+            : (newMsgPayload.type === 'image' ? '📷 Sent a photo' : newMsgPayload.type === 'audio' ? '🎵 Sent a voice note' : '💬 New message');
+
+          // Fetch sender's display name for notification title
+          let senderName = displayName || userId;
+          sendPushNotification(partnerId, {
+            title: senderName,
+            body: previewText,
+            icon: '/favicon.svg',
+            badge: '/favicon.svg',
+            tag: `msg_${roomId}`,
+            data: { url: '/' },
+          }).catch(() => {}); // Fire and forget
+        }
 
         if (typeof ackCallback === 'function') {
           ackCallback({ success: true, message: savedMessage });

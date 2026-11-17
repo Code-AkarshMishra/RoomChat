@@ -12,10 +12,12 @@ import {
   apiBurnNoteAction, 
   apiDeleteMessage,
   apiReactMessage,
-  clearAuthToken 
+  clearAuthToken,
+  getAuthToken,
 } from '../../services/api';
 import { initSocket, getSocket, disconnectSocket } from '../../services/socket';
 import { sounds } from '../../utils/soundEffects';
+import { registerServiceWorker, subscribeToPush, unsubscribeFromPush } from '../../utils/pushNotifications';
 
 export default function ChatApp({ sessionUser, initialPartner, onPanicExit, theme, onToggleTheme }) {
   const [currentUser, setCurrentUser] = useState(sessionUser);
@@ -40,6 +42,24 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
   const [callState, setCallState] = useState(null);
   const [activeSocket, setActiveSocket] = useState(null);
 
+  // Ref always pointing to latest partner info (for use inside stable socket listeners)
+  const partnerRef = useRef(initialPartner);
+  useEffect(() => {
+    partnerRef.current = partner;
+  }, [partner]);
+
+  // Ref always pointing to latest currentUser info
+  const currentUserRef = useRef(sessionUser);
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+
+  // Ref to track live partner online state (used in handleSendMessage for optimistic tick)
+  const isPartnerOnlineRef = useRef(false);
+  useEffect(() => {
+    isPartnerOnlineRef.current = isPartnerOnline;
+  }, [isPartnerOnline]);
+
   // Modals state
   const [cameraOpen, setCameraOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -58,29 +78,44 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
     localStorage.setItem('roomchat_wallpaper', wpId);
   };
 
-  // Toggle browser push notifications
+  // Toggle browser push notifications (tab + background via Service Worker)
   const handleToggleNotifications = async () => {
     if (!('Notification' in window)) {
       alert('This browser does not support desktop notifications.');
       return;
     }
 
-    if (Notification.permission === 'granted') {
-      const next = !notificationsEnabled;
-      setNotificationsEnabled(next);
-      localStorage.setItem('roomchat_notifications', String(next));
-    } else {
-      const perm = await Notification.requestPermission();
-      if (perm === 'granted') {
-        setNotificationsEnabled(true);
-        localStorage.setItem('roomchat_notifications', 'true');
-        new Notification('RoomChat Notifications Enabled', {
-          body: 'You will receive instant alerts when your partner messages you.',
-          icon: partner?.avatarUrl || '/favicon.svg',
-        });
-      } else {
-        alert('Notification permission was denied in your browser settings.');
+    if (notificationsEnabled) {
+      // Turn OFF
+      setNotificationsEnabled(false);
+      localStorage.setItem('roomchat_notifications', 'false');
+      const token = getAuthToken();
+      if (token) unsubscribeFromPush(token).catch(() => {});
+      return;
+    }
+
+    // Turn ON — request permission
+    const perm = Notification.permission !== 'granted'
+      ? await Notification.requestPermission()
+      : 'granted';
+
+    if (perm === 'granted') {
+      setNotificationsEnabled(true);
+      localStorage.setItem('roomchat_notifications', 'true');
+
+      // Subscribe to web push (background notifications)
+      const token = getAuthToken();
+      if (token) {
+        const ok = await subscribeToPush(token);
+        if (ok) {
+          new Notification('RoomChat', {
+            body: `Notifications enabled! You'll be alerted even when the tab is closed.`,
+            icon: partner?.avatarUrl || '/favicon.svg',
+          });
+        }
       }
+    } else {
+      alert('Notification permission was denied in your browser settings.');
     }
   };
 
@@ -131,6 +166,8 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
   }, []);
 
   // Socket Connection & Real-Time Listeners
+  // ⚠️ IMPORTANT: This useEffect has EMPTY deps [] so the socket connects ONCE and NEVER reconnects.
+  // All partner/currentUser access inside uses refs (partnerRef, currentUserRef) to avoid stale closures.
   useEffect(() => {
     const socket = initSocket();
     if (!socket) return;
@@ -138,7 +175,7 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
 
     // Presence & Last Seen updates
     socket.on('presence_status', (data) => {
-      if (data.userId?.toLowerCase() === partner?.userId?.toLowerCase()) {
+      if (data.userId?.toLowerCase() === partnerRef.current?.userId?.toLowerCase()) {
         setIsPartnerOnline(Boolean(data.isOnline));
         if (data.lastSeen !== undefined) {
           setPartner((prev) => ({ ...prev, lastSeen: data.lastSeen }));
@@ -173,7 +210,7 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
       });
 
       // If message is received from partner (I am the receiver)
-      if (newMsg.sender?.toLowerCase() !== currentUser.userId?.toLowerCase()) {
+      if (newMsg.sender?.toLowerCase() !== currentUserRef.current?.userId?.toLowerCase()) {
         socket.emit('message_delivered', { messageId: newMsg._id });
         socket.emit('message_read', { messageId: newMsg._id });
 
@@ -184,9 +221,9 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
         if (localStorage.getItem('roomchat_notifications') === 'true' && 'Notification' in window && Notification.permission === 'granted') {
           try {
             const previewText = newMsg.text || (newMsg.type === 'image' ? '📷 Photo' : newMsg.type === 'audio' ? '🎵 Voice note' : 'New message');
-            new Notification(partner?.displayName || 'Partner', {
+            new Notification(partnerRef.current?.displayName || 'Partner', {
               body: previewText,
-              icon: partner?.avatarUrl || '/favicon.svg',
+              icon: partnerRef.current?.avatarUrl || '/favicon.svg',
               tag: 'roomchat_msg',
             });
           } catch {}
@@ -194,13 +231,14 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
       }
     });
 
-    // WebRTC Incoming Call from Partner
+    // ✅ WebRTC Incoming Call — right here in the main effect for reliability
     socket.on('incoming_call', (data) => {
+      console.log('[CallDebug] incoming_call received:', data);
       setCallState({
         mode: 'incoming',
         callType: data.callType || 'video',
-        callerName: data.callerName || partner?.displayName || 'Partner',
-        callerAvatar: partner?.avatarUrl || null,
+        callerName: data.callerName || partnerRef.current?.displayName || 'Partner',
+        callerAvatar: partnerRef.current?.avatarUrl || null,
         callerId: data.callerId,
         offer: data.offer,
       });
@@ -287,7 +325,7 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
     return () => {
       disconnectSocket();
     };
-  }, [partner?.userId, partner?.displayName, partner?.avatarUrl]);
+  }, []); // ← EMPTY deps: socket connects ONCE, uses refs for fresh data
 
   // Actions
   const handleSendMessage = (messagePayload) => {
@@ -304,7 +342,7 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
       mediaDuration: messagePayload.mediaDuration || null,
       replyTo: messagePayload.replyTo || null,
       reactions: [],
-      status: isPartnerOnline ? 'delivered' : 'sent',
+      status: isPartnerOnlineRef.current ? 'delivered' : 'sent',
       isBurnNote: Boolean(messagePayload.isBurnNote),
       burnAfterSeconds: messagePayload.burnAfterSeconds || 10,
       createdAt: new Date().toISOString(),

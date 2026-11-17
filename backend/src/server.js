@@ -8,6 +8,7 @@ const authRoutes = require('./routes/authRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const healthRoutes = require('./routes/healthRoutes');
 const setupSocketHandlers = require('./sockets/socketHandler');
+const { initWebPush } = require('./utils/webPush');
 
 const app = express();
 const server = http.createServer(app);
@@ -53,6 +54,9 @@ const io = new Server(server, {
 });
 
 setupSocketHandlers(io);
+
+// Initialize Web Push
+initWebPush();
 
 // Optional internal keep-alive self-ping for free tier hosting (Render/Railway)
 if (process.env.AUTO_PING_URL) {

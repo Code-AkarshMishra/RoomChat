@@ -3,9 +3,9 @@ const multer = require('multer');
 
 // Configure Cloudinary
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
+  cloud_name: (process.env.CLOUDINARY_CLOUD_NAME || '').trim(),
+  api_key: (process.env.CLOUDINARY_API_KEY || '').trim(),
+  api_secret: (process.env.CLOUDINARY_API_SECRET || '').trim(),
   secure: true,
 });
 
@@ -20,33 +20,44 @@ const upload = multer({
 });
 
 /**
- * Upload buffer directly to Cloudinary
+ * Upload buffer directly to Cloudinary with automatic resilient fallback
  * @param {Buffer} buffer 
  * @param {string} folder 
  * @param {string} resource_type 'image' | 'video' | 'auto' | 'raw'
  * @returns {Promise<{url: string, public_id: string, resource_type: string}>}
  */
 const uploadToCloudinary = (buffer, folder = 'roomchat_media', resource_type = 'auto') => {
-  return new Promise((resolve, reject) => {
-    // If Cloudinary keys are missing, gracefully generate a data URI fallback
-    if (!process.env.CLOUDINARY_CLOUD_NAME || process.env.CLOUDINARY_CLOUD_NAME === 'your_cloud_name') {
-      console.warn('⚠️ Cloudinary keys not configured. Falling back to data URI / local representation.');
+  return new Promise((resolve) => {
+    const cloudName = (process.env.CLOUDINARY_CLOUD_NAME || '').trim();
+
+    const generateFallback = (reason) => {
+      console.warn(`⚠️ Cloudinary bypass (${reason}). Using high-performance inline base64 fallback.`);
       const base64 = buffer.toString('base64');
       const mime = resource_type === 'video' ? 'video/mp4' : (resource_type === 'audio' ? 'audio/webm' : 'image/jpeg');
       return resolve({
         url: `data:${mime};base64,${base64}`,
-        public_id: `mock_${Date.now()}`,
+        public_id: `fallback_${Date.now()}`,
         resource_type,
       });
+    };
+
+    // If Cloudinary keys are missing or placeholder
+    if (!cloudName || cloudName === 'your_cloud_name') {
+      return generateFallback('No Cloudinary credentials provided');
     }
 
     const uploadStream = cloudinary.uploader.upload_stream(
       {
         folder,
         resource_type,
+        timeout: 10000,
       },
       (error, result) => {
-        if (error) return reject(error);
+        if (error) {
+          console.warn(`⚠️ Cloudinary Upload Error: ${error.message} (HTTP ${error.http_code || 'unknown'}).`);
+          // Fallback seamlessly so the user's photo/voice note never fails to deliver!
+          return generateFallback(error.message);
+        }
         resolve({
           url: result.secure_url,
           public_id: result.public_id,
@@ -65,4 +76,3 @@ module.exports = {
   upload,
   uploadToCloudinary,
 };
-

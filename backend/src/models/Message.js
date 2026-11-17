@@ -33,6 +33,23 @@ const messageSchema = new mongoose.Schema(
       type: Number,
       default: null,
     },
+    replyTo: {
+      messageId: { type: String, default: null },
+      text: { type: String, default: null },
+      senderName: { type: String, default: null },
+      mediaUrl: { type: String, default: null },
+      type: { type: String, default: null },
+    },
+    reactions: [
+      {
+        userId: { type: String, required: true },
+        emoji: { type: String, required: true },
+      },
+    ],
+    isDeleted: {
+      type: Boolean,
+      default: false,
+    },
     status: {
       type: String,
       enum: ['sent', 'delivered', 'read'],
@@ -69,8 +86,6 @@ const messageSchema = new mongoose.Schema(
   }
 );
 
-// Index for high-performance chronological queries
 messageSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model('Message', messageSchema);
-

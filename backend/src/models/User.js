@@ -29,6 +29,14 @@ const userSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    avatarUrl: {
+      type: String,
+      default: null,
+    },
+    lastSeen: {
+      type: Date,
+      default: Date.now,
+    },
     vibeStatus: {
       emoji: { type: String, default: '💖' },
       text: { type: String, default: 'Thinking of you' },
@@ -52,29 +60,24 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-// Method to verify password
 userSchema.methods.verifyPassword = async function (enteredPassword) {
   return bcrypt.compare(enteredPassword, this.passwordHash);
 };
 
-// Method to verify 4-digit PIN
 userSchema.methods.verifyPIN = async function (enteredPIN) {
   const pepper = process.env.PIN_PEPPER || '';
   return bcrypt.compare(enteredPIN + pepper, this.pinHash);
 };
 
-// Static helper to hash PIN
 userSchema.statics.hashPIN = async function (pin) {
   const pepper = process.env.PIN_PEPPER || '';
   const salt = await bcrypt.genSalt(10);
   return bcrypt.hash(pin + pepper, salt);
 };
 
-// Static helper to hash password
 userSchema.statics.hashPassword = async function (password) {
   const salt = await bcrypt.genSalt(10);
   return bcrypt.hash(password, salt);
 };
 
 module.exports = mongoose.model('User', userSchema);
-

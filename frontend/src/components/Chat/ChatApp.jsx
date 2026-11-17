@@ -3,101 +3,101 @@ import ChatHeader from './ChatHeader';
 import MessageList from './MessageList';
 import MessageInput from './MessageInput';
 import LiveCameraModal from '../Modals/LiveCameraModal';
-import LoveBombOverlay from '../Modals/LoveBombModal';
-import CountdownModal from '../Modals/CountdownModal';
-import VibeModal from '../Modals/VibeModal';
 import ImageLightboxModal from '../Modals/ImageLightboxModal';
+import SettingsModal from '../Modals/SettingsModal';
 import { 
   apiGetMessages, 
   apiBurnNoteAction, 
-  apiGetCoupleMeta, 
+  apiDeleteMessage,
+  apiReactMessage,
   clearAuthToken 
 } from '../../services/api';
 import { initSocket, getSocket, disconnectSocket } from '../../services/socket';
 
-export default function ChatApp({ sessionUser, initialPartner, onPanicExit }) {
+export default function ChatApp({ sessionUser, initialPartner, onPanicExit, theme, onToggleTheme }) {
   const [currentUser, setCurrentUser] = useState(sessionUser);
   const [partner, setPartner] = useState(initialPartner);
   const [isPartnerOnline, setIsPartnerOnline] = useState(false);
   const [isPartnerTyping, setIsPartnerTyping] = useState(false);
-  const [latency, setLatency] = useState(null);
 
   const [messages, setMessages] = useState([]);
-  const [coupleMeta, setCoupleMeta] = useState(null);
+  const [replyingTo, setReplyingTo] = useState(null);
 
   // Modals state
   const [cameraOpen, setCameraOpen] = useState(false);
-  const [countdownOpen, setCountdownOpen] = useState(false);
-  const [vibeModalOpen, setVibeModalOpen] = useState(false);
-  const [loveBombData, setLoveBombData] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [lightboxImageUrl, setLightboxImageUrl] = useState(null);
 
-  // Panic button shortcut: double escape press
-  const lastEscPressRef = useRef(0);
+  const isDark = theme === 'dark';
 
-  const handleEmergencyPanic = useCallback(() => {
-    disconnectSocket();
-    clearAuthToken();
-    onPanicExit();
-  }, [onPanicExit]);
-
+  // 🚨 CRITICAL PARANOIA SECURITY:
+  // If user switches tab or presses browser back button, immediately wipe session & exit to cover!
   useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') {
-        const now = Date.now();
-        if (now - lastEscPressRef.current < 600) {
-          handleEmergencyPanic();
-        } else {
-          lastEscPressRef.current = now;
-        }
+    // 1. Tab switch / screen minimize detection
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        disconnectSocket();
+        clearAuthToken();
+        onPanicExit();
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleEmergencyPanic]);
 
-  // Load message history & couple metadata
+    // 2. Browser back button detection
+    window.history.pushState(null, '', window.location.href);
+    const handlePopState = () => {
+      disconnectSocket();
+      clearAuthToken();
+      onPanicExit();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [onPanicExit]);
+
+  // Load chat history
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
-        const msgRes = await apiGetMessages(80);
+        const msgRes = await apiGetMessages(100);
         if (msgRes.success) {
           setMessages(msgRes.messages || []);
         }
-
-        const metaRes = await apiGetCoupleMeta();
-        if (metaRes.success && metaRes.data) {
-          setCoupleMeta(metaRes.data);
-        }
       } catch (err) {
-        console.error('Error loading initial chat data:', err);
+        console.error('Error loading chat history:', err);
       }
     };
     fetchInitialData();
   }, []);
 
-  // Socket Connection & Event Listeners
+  // Socket Connection & Real-Time Listeners
   useEffect(() => {
-    const socket = initSocket((measuredLatency) => {
-      setLatency(measuredLatency);
-    });
-
+    const socket = initSocket();
     if (!socket) return;
 
-    // Presence update
+    // Presence & Last Seen
     socket.on('presence_status', (data) => {
       if (data.userId === partner?.userId) {
         setIsPartnerOnline(data.isOnline);
+        if (data.lastSeen) {
+          setPartner((prev) => ({ ...prev, lastSeen: data.lastSeen }));
+        }
       }
       if (data.partnerOnline !== undefined) {
         setIsPartnerOnline(data.partnerOnline);
+      }
+      if (data.partnerLastSeen) {
+        setPartner((prev) => ({ ...prev, lastSeen: data.partnerLastSeen }));
       }
     });
 
     // Incoming new message
     socket.on('receive_message', (newMsg) => {
       setMessages((prev) => {
-        // If this message was sent optimistically by this client, replace the temp bubble
         if (newMsg.clientTempId) {
           const matchIndex = prev.findIndex(
             (m) => m.clientTempId === newMsg.clientTempId || m._id === newMsg.clientTempId
@@ -108,45 +108,61 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit }) {
             return next;
           }
         }
-
-        // Prevent duplicate rendering
         if (prev.some((m) => m._id === newMsg._id)) return prev;
         return [...prev, newMsg];
       });
 
-      // If partner sent it, immediately send delivery and read receipts
       if (newMsg.sender === partner?.userId) {
         socket.emit('message_delivered', { messageId: newMsg._id });
         socket.emit('message_read', { messageId: newMsg._id });
       }
     });
 
-    // Status updates (sent -> delivered -> read ticks)
+    // Message Deleted for Everyone
+    socket.on('message_deleted', ({ messageId }) => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m._id === messageId
+            ? { ...m, isDeleted: true, text: 'This message was deleted', mediaUrl: null }
+            : m
+        )
+      );
+    });
+
+    // Entire Chat Cleared
+    socket.on('chat_cleared', () => {
+      setMessages([]);
+    });
+
+    // Message Reaction Updated
+    socket.on('message_reaction_updated', ({ messageId, reactions }) => {
+      setMessages((prev) =>
+        prev.map((m) => (m._id === messageId ? { ...m, reactions } : m))
+      );
+    });
+
+    // Partner Profile Updated
+    socket.on('partner_profile_updated', (profile) => {
+      setPartner((prev) => ({
+        ...prev,
+        displayName: profile.displayName || prev.displayName,
+        avatarUrl: profile.avatarUrl !== undefined ? profile.avatarUrl : prev.avatarUrl,
+      }));
+    });
+
+    // Status ticks (sent -> delivered -> read)
     socket.on('message_status_updated', ({ messageId, status }) => {
       setMessages((prev) =>
         prev.map((m) => (m._id === messageId ? { ...m, status } : m))
       );
     });
 
-    // Typing indicators
+    // Typing
     socket.on('partner_typing', ({ isTyping }) => {
       setIsPartnerTyping(isTyping);
     });
 
-    // Love Bomb trigger from partner
-    socket.on('love_bomb_explode', (bombPayload) => {
-      setLoveBombData(bombPayload);
-    });
-
-    // Partner Vibe status updated
-    socket.on('partner_vibe_updated', ({ vibeStatus }) => {
-      setPartner((prev) => ({
-        ...prev,
-        vibeStatus,
-      }));
-    });
-
-    // Burn note self-destructed by server/partner
+    // Burn note incinerated
     socket.on('burn_note_incinerated', ({ messageId }) => {
       setMessages((prev) =>
         prev.map((m) =>
@@ -164,7 +180,6 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit }) {
 
   // Actions
   const handleSendMessage = (messagePayload) => {
-    // Generate unique temporary client ID for 0.00-second instant optimistic display
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
     const optimisticMessage = {
       _id: tempId,
@@ -176,6 +191,8 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit }) {
       mediaUrl: messagePayload.mediaUrl || null,
       mediaPublicId: messagePayload.mediaPublicId || null,
       mediaDuration: messagePayload.mediaDuration || null,
+      replyTo: messagePayload.replyTo || null,
+      reactions: [],
       status: isPartnerOnline ? 'delivered' : 'sent',
       isBurnNote: Boolean(messagePayload.isBurnNote),
       burnAfterSeconds: messagePayload.burnAfterSeconds || 10,
@@ -183,7 +200,6 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit }) {
       isOptimistic: true,
     };
 
-    // ⚡ INSTANT RENDER: Appears on your screen in 0 milliseconds!
     setMessages((prev) => [...prev, optimisticMessage]);
 
     const socket = getSocket();
@@ -195,106 +211,122 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit }) {
     }
   };
 
-  const handleTypingStart = () => {
-    const socket = getSocket();
-    if (socket) socket.emit('typing_start');
+  const handleReplyMessage = (message) => {
+    const senderName = message.sender === currentUser.userId ? 'You' : (partner?.displayName || 'Partner');
+    setReplyingTo({
+      _id: message._id,
+      text: message.text,
+      senderName,
+      mediaUrl: message.mediaUrl,
+      type: message.type,
+    });
   };
 
-  const handleTypingStop = () => {
-    const socket = getSocket();
-    if (socket) socket.emit('typing_stop');
-  };
+  const handleDeleteMessage = async (messageId) => {
+    if (!window.confirm('Delete this message for everyone?')) return;
 
-  const handleTriggerLoveBomb = () => {
-    const socket = getSocket();
-    const payload = {
-      senderId: currentUser.userId,
-      senderName: currentUser.displayName,
-      emoji: '💖',
-      count: 50,
-      message: `${currentUser.displayName} ignited a Love Bomb! 💥❤️`,
-    };
+    // Optimistic delete
+    setMessages((prev) =>
+      prev.map((m) =>
+        m._id === messageId
+          ? { ...m, isDeleted: true, text: 'This message was deleted', mediaUrl: null }
+          : m
+      )
+    );
 
+    const socket = getSocket();
     if (socket) {
-      socket.emit('trigger_love_bomb', payload);
-    } else {
-      setLoveBombData(payload);
+      socket.emit('delete_message', { messageId });
     }
+    try {
+      await apiDeleteMessage(messageId);
+    } catch {}
+  };
+
+  const handleReactMessage = async (messageId, emoji) => {
+    const socket = getSocket();
+    if (socket) {
+      socket.emit('react_message', { messageId, emoji });
+    }
+    try {
+      await apiReactMessage(messageId, emoji);
+    } catch {}
   };
 
   const handleBurnNoteView = async (messageId) => {
     try {
       await apiBurnNoteAction(messageId, 'view');
-    } catch (err) {
-      console.error('Burn note view error:', err);
+    } catch {}
+  };
+
+  const handleProfileUpdated = (updatedUser) => {
+    setCurrentUser((prev) => ({ ...prev, ...updatedUser }));
+    const socket = getSocket();
+    if (socket) {
+      socket.emit('broadcast_profile_updated', updatedUser);
     }
   };
 
-  const handleVibeChanged = (newVibe) => {
-    setCurrentUser((prev) => ({ ...prev, vibeStatus: newVibe }));
+  const handleClearChat = () => {
+    setMessages([]);
     const socket = getSocket();
     if (socket) {
-      socket.emit('broadcast_vibe', newVibe);
+      socket.emit('clear_chat');
     }
   };
 
   return (
-    <div className="h-screen max-h-screen bg-slate-950 flex flex-col justify-between overflow-hidden">
+    <div className={`h-[100dvh] max-h-[100dvh] flex flex-col justify-between overflow-hidden ${isDark ? 'bg-slate-950 text-white' : 'bg-slate-50 text-slate-900'} transition-colors`}>
       {/* Top Header */}
       <ChatHeader
         partner={partner}
         isPartnerOnline={isPartnerOnline}
-        latency={latency}
-        onPanicExit={handleEmergencyPanic}
-        onOpenCountdown={() => setCountdownOpen(true)}
-        onOpenVibeModal={() => setVibeModalOpen(true)}
-        onTriggerLoveBomb={handleTriggerLoveBomb}
-        coupleMeta={coupleMeta}
+        onPanicExit={onPanicExit}
+        onOpenSettings={() => setSettingsOpen(true)}
+        theme={theme}
       />
 
-      {/* Main Messages View */}
+      {/* Message List */}
       <MessageList
         messages={messages}
         currentUser={currentUser}
         partner={partner}
         isPartnerTyping={isPartnerTyping}
+        theme={theme}
+        onReply={handleReplyMessage}
+        onDelete={handleDeleteMessage}
+        onReact={handleReactMessage}
         onBurnNoteView={handleBurnNoteView}
         onImageClick={(url) => setLightboxImageUrl(url)}
       />
 
-      {/* Bottom Input Toolbar */}
+      {/* Message Input Toolbar */}
       <MessageInput
         onSendMessage={handleSendMessage}
-        onTypingStart={handleTypingStart}
-        onTypingStop={handleTypingStop}
+        onTypingStart={() => getSocket()?.emit('typing_start')}
+        onTypingStop={() => getSocket()?.emit('typing_stop')}
         onOpenCamera={() => setCameraOpen(true)}
-        onTriggerLoveBomb={handleTriggerLoveBomb}
+        replyingTo={replyingTo}
+        onCancelReply={() => setReplyingTo(null)}
+        theme={theme}
       />
 
-      {/* Modals & Overlays */}
+      {/* Modals */}
       <LiveCameraModal
         isOpen={cameraOpen}
         onClose={() => setCameraOpen(false)}
         onSendCapturedMedia={handleSendMessage}
       />
 
-      <LoveBombOverlay
-        bombData={loveBombData}
-        onClose={() => setLoveBombData(null)}
-      />
-
-      <CountdownModal
-        isOpen={countdownOpen}
-        onClose={() => setCountdownOpen(false)}
-        coupleMeta={coupleMeta}
-        onMetaUpdated={(updated) => setCoupleMeta(updated)}
-      />
-
-      <VibeModal
-        isOpen={vibeModalOpen}
-        onClose={() => setVibeModalOpen(false)}
-        currentVibe={currentUser?.vibeStatus}
-        onVibeChanged={handleVibeChanged}
+      <SettingsModal
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        currentUser={currentUser}
+        onProfileUpdated={handleProfileUpdated}
+        onClearChat={handleClearChat}
+        theme={theme}
+        onToggleTheme={onToggleTheme}
+        onPanicExit={onPanicExit}
       />
 
       <ImageLightboxModal
@@ -304,4 +336,3 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit }) {
     </div>
   );
 }
-

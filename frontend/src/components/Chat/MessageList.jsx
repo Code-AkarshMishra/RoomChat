@@ -6,26 +6,30 @@ export default function MessageList({
   currentUser,
   partner,
   isPartnerTyping,
+  theme,
+  onReply,
+  onDelete,
+  onReact,
   onBurnNoteView,
   onImageClick,
 }) {
   const bottomRef = useRef(null);
+  const isDark = theme === 'dark';
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isPartnerTyping]);
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1">
-      {/* Welcome / Encryption Banner */}
-      <div className="text-center my-4">
-        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/80 border border-slate-800 text-xs text-slate-400">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <span>Exclusive 1-on-1 private channel • Zero server cache logs</span>
+    <div className={`flex-1 overflow-y-auto px-4 py-4 space-y-1 ${isDark ? 'bg-slate-950' : 'bg-slate-50'}`}>
+      {messages.length === 0 && (
+        <div className="h-full flex flex-col items-center justify-center text-center py-12">
+          <p className={`text-xs ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+            No messages yet. Say hello!
+          </p>
         </div>
-      </div>
+      )}
 
-      {/* Message List */}
       {messages.map((msg, index) => {
         const isOwn = msg.sender === currentUser?.userId;
         return (
@@ -33,6 +37,10 @@ export default function MessageList({
             key={msg._id || index}
             message={msg}
             isOwn={isOwn}
+            theme={theme}
+            onReply={onReply}
+            onDelete={onDelete}
+            onReact={onReact}
             onBurnNoteView={onBurnNoteView}
             onImageClick={onImageClick}
           />
@@ -41,13 +49,15 @@ export default function MessageList({
 
       {/* Partner Typing Indicator */}
       {isPartnerTyping && (
-        <div className="flex items-center gap-2 mb-3">
-          <div className="bg-slate-800 border border-slate-700/60 rounded-2xl rounded-bl-xs px-3.5 py-2 text-xs text-slate-300 flex items-center gap-1.5 shadow-sm">
+        <div className="flex items-center gap-2 mb-2">
+          <div className={`rounded-2xl rounded-bl-xs px-3 py-1.5 text-xs flex items-center gap-1.5 shadow-xs border ${
+            isDark ? 'bg-slate-800 text-slate-300 border-slate-700/60' : 'bg-white text-slate-600 border-slate-200'
+          }`}>
             <span>{partner?.displayName || 'Partner'} is typing</span>
             <div className="flex gap-1 items-center ml-1">
-              <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-              <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-              <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" />
+              <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce [animation-delay:-0.3s]" />
+              <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce [animation-delay:-0.15s]" />
+              <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-bounce" />
             </div>
           </div>
         </div>
@@ -57,4 +67,3 @@ export default function MessageList({
     </div>
   );
 }
-

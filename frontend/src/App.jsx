@@ -1,30 +1,42 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import CoverApp from './components/StealthCover/CoverApp';
 import AuthModal from './components/Auth/AuthModal';
 import ChatApp from './components/Chat/ChatApp';
 import { setAuthToken, clearAuthToken } from './services/api';
 
 export default function App() {
-  // Mode: 'cover' (innocent To-Do list), 'auth' (security gateway popup), 'chat' (secure room)
-  const [appMode, setAppMode] = useState('cover');
+  const [appMode, setAppMode] = useState('cover'); // 'cover' | 'auth' | 'chat'
   const [sessionUser, setSessionUser] = useState(null);
   const [partnerUser, setPartnerUser] = useState(null);
+  const [theme, setTheme] = useState('dark'); // 'dark' | 'light'
 
-  // Triggered by stealth gesture
+  // Apply dark mode class to document
+  useEffect(() => {
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+  };
+
+  // Triggered when user enters "open chat" in task list
   const handleUnlockSecretGate = () => {
     setAppMode('auth');
   };
 
-  // Triggered when both Step 1 (credentials) and Step 2 (PIN) pass
+  // Triggered when both Step 1 & Step 2 pass
   const handleAuthenticated = ({ token, user, partner }) => {
-    // Save token strictly in JavaScript memory closure (zero storage policy)
     setAuthToken(token);
     setSessionUser(user);
     setPartnerUser(partner);
     setAppMode('chat');
   };
 
-  // Immediate Panic Wipe (returns to cover, destroys memory tokens)
+  // Immediate Panic Wipe (wipes memory, returns to cover)
   const handlePanicExit = () => {
     clearAuthToken();
     setSessionUser(null);
@@ -33,23 +45,28 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 select-none">
+    <div className={`min-h-screen ${theme === 'dark' ? 'bg-slate-950 text-white' : 'bg-slate-50 text-slate-900'} select-none transition-colors`}>
       {appMode === 'chat' && sessionUser ? (
         <ChatApp
           sessionUser={sessionUser}
           initialPartner={partnerUser}
           onPanicExit={handlePanicExit}
+          theme={theme}
+          onToggleTheme={toggleTheme}
         />
       ) : (
         <>
-          {/* Always render deceptive Cover App when not in chat */}
-          <CoverApp onUnlockSecretGate={handleUnlockSecretGate} />
+          <CoverApp
+            onUnlockSecretGate={handleUnlockSecretGate}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+          />
 
-          {/* Secret Security Vault Gateway */}
           {appMode === 'auth' && (
             <AuthModal
               onAuthenticated={handleAuthenticated}
               onClose={() => setAppMode('cover')}
+              theme={theme}
             />
           )}
         </>

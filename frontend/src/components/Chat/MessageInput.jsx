@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
   Send, 
   Camera, 
@@ -7,10 +7,8 @@ import {
   Square, 
   Flame, 
   Trash2, 
-  Paperclip,
-  Heart,
-  Smile,
-  X
+  X,
+  CornerUpLeft
 } from 'lucide-react';
 import { apiUploadMedia } from '../../services/api';
 
@@ -19,7 +17,9 @@ export default function MessageInput({
   onTypingStart,
   onTypingStop,
   onOpenCamera,
-  onTriggerLoveBomb,
+  replyingTo,
+  onCancelReply,
+  theme,
 }) {
   const [text, setText] = useState('');
   const [isBurnNote, setIsBurnNote] = useState(false);
@@ -34,13 +34,11 @@ export default function MessageInput({
   const recordingTimerRef = useRef(null);
   const typingTimerRef = useRef(null);
 
-  // Typing event debouncer
+  const isDark = theme === 'dark';
+
   const handleTextChange = (e) => {
     setText(e.target.value);
-
-    if (onTypingStart) {
-      onTypingStart();
-    }
+    if (onTypingStart) onTypingStart();
 
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     typingTimerRef.current = setTimeout(() => {
@@ -48,7 +46,6 @@ export default function MessageInput({
     }, 1500);
   };
 
-  // Submit Text / Burn Note
   const handleSubmit = (e) => {
     e?.preventDefault();
     if (!text.trim() || isUploading) return;
@@ -58,14 +55,23 @@ export default function MessageInput({
       text: text.trim(),
       isBurnNote,
       burnAfterSeconds: burnSeconds,
+      ...(replyingTo ? {
+        replyTo: {
+          messageId: replyingTo._id,
+          text: replyingTo.text,
+          senderName: replyingTo.senderName,
+          mediaUrl: replyingTo.mediaUrl,
+          type: replyingTo.type,
+        }
+      } : {}),
     });
 
     setText('');
     setIsBurnNote(false);
+    if (onCancelReply) onCancelReply();
     if (onTypingStop) onTypingStop();
   };
 
-  // Handle Gallery Media Upload
   const handleFileSelect = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -81,8 +87,18 @@ export default function MessageInput({
           mediaUrl: uploadRes.mediaUrl,
           mediaPublicId: uploadRes.publicId,
           text: text.trim() || '',
+          ...(replyingTo ? {
+            replyTo: {
+              messageId: replyingTo._id,
+              text: replyingTo.text,
+              senderName: replyingTo.senderName,
+              mediaUrl: replyingTo.mediaUrl,
+              type: replyingTo.type,
+            }
+          } : {}),
         });
         setText('');
+        if (onCancelReply) onCancelReply();
       }
     } catch (err) {
       alert(`Media upload failed: ${err.message}`);
@@ -92,7 +108,7 @@ export default function MessageInput({
     }
   };
 
-  // Start Voice Note Recording via MediaRecorder
+  // Start Voice Recording
   const startRecordingVoice = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -101,15 +117,13 @@ export default function MessageInput({
       mediaRecorderRef.current = mediaRecorder;
 
       mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
       };
 
       mediaRecorder.onstop = async () => {
         stream.getTracks().forEach((track) => track.stop());
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        if (audioBlob.size < 500) return; // Too short
+        if (audioBlob.size < 500) return;
 
         setIsUploading(true);
         try {
@@ -121,7 +135,17 @@ export default function MessageInput({
               mediaUrl: uploadRes.mediaUrl,
               mediaPublicId: uploadRes.publicId,
               mediaDuration: recordingDuration,
+              ...(replyingTo ? {
+                replyTo: {
+                  messageId: replyingTo._id,
+                  text: replyingTo.text,
+                  senderName: replyingTo.senderName,
+                  mediaUrl: replyingTo.mediaUrl,
+                  type: replyingTo.type,
+                }
+              } : {}),
             });
+            if (onCancelReply) onCancelReply();
           }
         } catch (err) {
           alert(`Voice upload failed: ${err.message}`);
@@ -142,7 +166,6 @@ export default function MessageInput({
     }
   };
 
-  // Stop & Send Voice Note
   const stopRecordingVoice = () => {
     if (mediaRecorderRef.current && isRecordingAudio) {
       mediaRecorderRef.current.stop();
@@ -151,7 +174,6 @@ export default function MessageInput({
     }
   };
 
-  // Cancel Voice Note
   const cancelRecordingVoice = () => {
     if (mediaRecorderRef.current) {
       audioChunksRef.current = [];
@@ -168,36 +190,52 @@ export default function MessageInput({
   };
 
   return (
-    <div className="p-3 bg-slate-900 border-t border-slate-800 z-10 sticky bottom-0">
-      {/* Burn-After-Reading Active Banner */}
+    <div className={`p-2.5 sm:p-3 border-t ${isDark ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'} z-10 sticky bottom-0 transition-colors`}>
+      {/* Replying Banner */}
+      {replyingTo && (
+        <div className={`mb-2 p-2 rounded-xl border flex items-center justify-between text-xs ${
+          isDark ? 'bg-slate-800/80 border-slate-700 text-slate-200' : 'bg-slate-100 border-slate-200 text-slate-800'
+        }`}>
+          <div className="flex items-center gap-2 overflow-hidden">
+            <CornerUpLeft className="w-3.5 h-3.5 text-indigo-500 flex-shrink-0" />
+            <div className="truncate">
+              <span className="font-semibold">{replyingTo.senderName}: </span>
+              <span className="opacity-80">
+                {replyingTo.text || (replyingTo.type === 'image' ? 'Photo' : 'Voice')}
+              </span>
+            </div>
+          </div>
+          <button onClick={onCancelReply} className="p-1 hover:opacity-75">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Burn-After-Reading Banner */}
       {isBurnNote && (
-        <div className="mb-2 p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs text-amber-300 animate-fade-in">
+        <div className="mb-2 p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs text-amber-500">
           <div className="flex items-center gap-1.5 font-medium">
-            <Flame className="w-4 h-4 text-amber-400 animate-pulse" />
-            <span>Burn Note Mode Active: Destructs in</span>
+            <Flame className="w-4 h-4 text-amber-500" />
+            <span>Burn Note Timer:</span>
             <select
               value={burnSeconds}
               onChange={(e) => setBurnSeconds(Number(e.target.value))}
-              className="bg-slate-950 border border-amber-500/40 rounded px-1.5 py-0.5 text-xs text-amber-200 focus:outline-none"
+              className={`rounded px-1.5 py-0.5 text-xs ${isDark ? 'bg-slate-950 text-amber-300' : 'bg-white text-slate-900'} border border-amber-500/40`}
             >
-              <option value={5}>5 seconds</option>
-              <option value={10}>10 seconds</option>
-              <option value={30}>30 seconds</option>
-              <option value={60}>60 seconds</option>
+              <option value={5}>5s</option>
+              <option value={10}>10s</option>
+              <option value={30}>30s</option>
+              <option value={60}>60s</option>
             </select>
           </div>
-          <button
-            onClick={() => setIsBurnNote(false)}
-            className="text-slate-400 hover:text-white p-1"
-          >
+          <button onClick={() => setIsBurnNote(false)} className="p-1">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
 
       {/* Main Input Row */}
-      <div className="flex items-center gap-2">
-        {/* Hidden File Picker */}
+      <div className="flex items-center gap-1.5 sm:gap-2">
         <input
           type="file"
           ref={fileInputRef}
@@ -206,22 +244,18 @@ export default function MessageInput({
           className="hidden"
         />
 
-        {/* Live Voice Recording Bar */}
         {isRecordingAudio ? (
-          <div className="flex-1 flex items-center justify-between bg-slate-950 border border-rose-500/40 rounded-2xl px-4 py-2.5 text-xs text-rose-400 animate-pulse">
+          <div className="flex-1 flex items-center justify-between bg-rose-500/10 border border-rose-500/30 rounded-2xl px-4 py-2.5 text-xs text-rose-500">
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping" />
-              <span className="font-semibold">Recording Voice Note...</span>
-              <span className="font-mono text-slate-300 ml-1">
-                {formatAudioTime(recordingDuration)}
-              </span>
+              <span className="font-semibold">Recording...</span>
+              <span className="font-mono ml-1">{formatAudioTime(recordingDuration)}</span>
             </div>
-
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={cancelRecordingVoice}
-                className="p-1.5 rounded-full bg-slate-800 text-slate-400 hover:text-white"
+                className="p-1.5 rounded-full hover:bg-rose-500/20"
                 title="Cancel"
               >
                 <Trash2 className="w-4 h-4" />
@@ -229,76 +263,75 @@ export default function MessageInput({
               <button
                 type="button"
                 onClick={stopRecordingVoice}
-                className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium flex items-center gap-1 shadow-md"
+                className="px-3 py-1 bg-indigo-600 text-white rounded-xl flex items-center gap-1 font-medium"
               >
-                <Square className="w-3.5 h-3.5 fill-white" /> Send
+                <Square className="w-3 h-3 fill-white" /> Send
               </button>
             </div>
           </div>
         ) : (
-          /* Normal Message Input Box */
           <>
-            {/* Live Camera Button */}
             <button
               type="button"
               onClick={onOpenCamera}
-              className="p-2.5 text-slate-400 hover:text-indigo-400 hover:bg-slate-800 rounded-xl transition-colors flex-shrink-0"
-              title="Open Live Camera (Snap & Send instantly)"
+              className={`p-2 rounded-xl transition-colors ${
+                isDark ? 'text-slate-400 hover:text-white hover:bg-slate-800' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+              title="Camera"
             >
               <Camera className="w-5 h-5" />
             </button>
 
-            {/* Gallery Upload Button */}
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="p-2.5 text-slate-400 hover:text-indigo-400 hover:bg-slate-800 rounded-xl transition-colors flex-shrink-0"
-              title="Share photo or video from gallery"
+              className={`p-2 rounded-xl transition-colors ${
+                isDark ? 'text-slate-400 hover:text-white hover:bg-slate-800' : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+              title="Photos/Videos"
             >
               <ImageIcon className="w-5 h-5" />
             </button>
 
-            {/* Burn Note Toggle */}
             <button
               type="button"
               onClick={() => setIsBurnNote(!isBurnNote)}
-              className={`p-2.5 rounded-xl transition-all flex-shrink-0 ${
+              className={`p-2 rounded-xl transition-all ${
                 isBurnNote
-                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-sm shadow-amber-500/20'
-                  : 'text-slate-400 hover:text-amber-400 hover:bg-slate-800'
+                  ? 'bg-amber-500/20 text-amber-500 border border-amber-500/40'
+                  : (isDark ? 'text-slate-400 hover:text-amber-400 hover:bg-slate-800' : 'text-slate-500 hover:text-amber-500 hover:bg-slate-100')
               }`}
-              title="Toggle Self-Destructing Burn Note"
+              title="Burn Note"
             >
               <Flame className="w-5 h-5" />
             </button>
 
-            {/* Text Input Form */}
             <form onSubmit={handleSubmit} className="flex-1 flex items-center">
               <input
                 type="text"
                 value={text}
                 onChange={handleTextChange}
-                placeholder={isBurnNote ? 'Type a self-destructing secret...' : 'Message partner privately...'}
-                className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors"
+                className={`w-full ${isDark ? 'bg-slate-950 border-slate-800 text-white' : 'bg-slate-100 border-slate-200 text-slate-900'} border rounded-2xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-indigo-500 transition-colors`}
               />
             </form>
 
-            {/* If there is text, show Send button; otherwise show Mic button */}
             {text.trim() ? (
               <button
                 onClick={handleSubmit}
                 disabled={isUploading}
-                className="p-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl shadow-md shadow-indigo-600/30 active:scale-95 transition-all flex-shrink-0"
-                title="Send message"
+                className="p-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl shadow-xs active:scale-95 transition-all"
+                title="Send"
               >
-                <Send className="w-5 h-5" />
+                <Send className="w-4 h-4" />
               </button>
             ) : (
               <button
                 type="button"
                 onClick={startRecordingVoice}
-                className="p-2.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-xl transition-colors flex-shrink-0"
-                title="Click to record Voice Note"
+                className={`p-2 rounded-xl transition-colors ${
+                  isDark ? 'text-slate-400 hover:text-rose-400 hover:bg-slate-800' : 'text-slate-500 hover:text-rose-500 hover:bg-slate-100'
+                }`}
+                title="Voice Note"
               >
                 <Mic className="w-5 h-5" />
               </button>
@@ -309,4 +342,3 @@ export default function MessageInput({
     </div>
   );
 }
-

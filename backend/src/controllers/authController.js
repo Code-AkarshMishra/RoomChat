@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const { JWT_SECRET } = require('../middleware/auth');
 
@@ -7,13 +8,6 @@ const { JWT_SECRET } = require('../middleware/auth');
 const memoryStore = {
   users: new Map(),
   messages: [],
-  coupleMeta: {
-    coupleId: 'couple_primary',
-    countdownTitle: 'Next Time We Meet ✈️💖',
-    countdownTargetDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
-    anniversaryDate: new Date('2024-01-01').toISOString(),
-    notes: 'Our private universe 🌌',
-  },
 };
 
 // Initialize in-memory seed users
@@ -40,6 +34,8 @@ const initMemoryUsers = async () => {
     passwordHash: p1PassHash,
     pinHash: p1PinHash,
     partnerId: p2Id,
+    avatarUrl: null,
+    lastSeen: new Date(),
     vibeStatus: { emoji: '💖', text: 'Thinking of you', updatedAt: new Date() },
     failedLoginAttempts: 0,
     lockoutUntil: null,
@@ -51,7 +47,9 @@ const initMemoryUsers = async () => {
     passwordHash: p2PassHash,
     pinHash: p2PinHash,
     partnerId: p1Id,
-    vibeStatus: { emoji: '✨', text: 'Counting down seconds', updatedAt: new Date() },
+    avatarUrl: null,
+    lastSeen: new Date(),
+    vibeStatus: { emoji: '✨', text: 'Online', updatedAt: new Date() },
     failedLoginAttempts: 0,
     lockoutUntil: null,
   });
@@ -61,7 +59,6 @@ initMemoryUsers();
 
 /**
  * Step 1: User ID and Password
- * Output: Temporary JWT token valid for 3 minutes for PIN verification
  */
 const loginStep1 = async (req, res) => {
   try {
@@ -70,18 +67,19 @@ const loginStep1 = async (req, res) => {
     if (!userId || !password) {
       return res.status(400).json({
         success: false,
-        message: 'User ID and Password are required.',
+        message: 'Enter both User ID and Password.',
       });
     }
 
     const cleanUserId = userId.trim().toLowerCase();
 
-    // Check DB or memory
     let user = null;
-    try {
-      user = await User.findOne({ userId: cleanUserId });
-    } catch {
-      user = null;
+    if (mongoose.connection.readyState === 1) {
+      try {
+        user = await User.findOne({ userId: cleanUserId });
+      } catch {
+        user = null;
+      }
     }
 
     if (!user) {
@@ -91,16 +89,7 @@ const loginStep1 = async (req, res) => {
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials. Access denied.',
-      });
-    }
-
-    // Check lockout
-    if (user.lockoutUntil && new Date(user.lockoutUntil) > new Date()) {
-      const waitMinutes = Math.ceil((new Date(user.lockoutUntil) - new Date()) / 60000);
-      return res.status(429).json({
-        success: false,
-        message: `Account temporarily locked due to multiple failed attempts. Retry in ${waitMinutes} minute(s).`,
+        message: 'Invalid credentials.',
       });
     }
 
@@ -113,35 +102,23 @@ const loginStep1 = async (req, res) => {
     }
 
     if (!passwordMatch) {
-      user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
-      if (user.failedLoginAttempts >= 5) {
-        user.lockoutUntil = new Date(Date.now() + 15 * 60 * 1000); // 15 min lock
-      }
-      if (typeof user.save === 'function') await user.save();
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials. Access denied.',
+        message: 'Invalid credentials.',
       });
     }
 
-    // Reset failed counter
-    user.failedLoginAttempts = 0;
-    user.lockoutUntil = null;
-    if (typeof user.save === 'function') await user.save();
-
-    // Issue short-lived partial token for PIN verification
     const partialToken = jwt.sign(
       {
         userId: user.userId,
         stage: 'pin_required',
       },
       JWT_SECRET,
-      { expiresIn: '3m' }
+      { expiresIn: '5m' }
     );
 
     return res.status(200).json({
       success: true,
-      message: 'Step 1 verified. Proceed to 4-digit PIN verification.',
       stage: 'pin_required',
       partialToken,
       displayName: user.displayName,
@@ -150,14 +127,13 @@ const loginStep1 = async (req, res) => {
     console.error('Login Step 1 Error:', error);
     return res.status(500).json({
       success: false,
-      message: 'Authentication service encountered an unexpected error.',
+      message: 'Authentication error.',
     });
   }
 };
 
 /**
  * Step 2: 4-digit Secret PIN Gate
- * Output: Full zero-trace session token
  */
 const loginStep2 = async (req, res) => {
   try {
@@ -166,7 +142,7 @@ const loginStep2 = async (req, res) => {
     if (!partialToken || !pin) {
       return res.status(400).json({
         success: false,
-        message: 'Partial token and 4-digit PIN are required.',
+        message: 'PIN code is required.',
       });
     }
 
@@ -176,24 +152,19 @@ const loginStep2 = async (req, res) => {
     } catch {
       return res.status(401).json({
         success: false,
-        message: 'Step 1 verification expired. Please re-enter credentials.',
-      });
-    }
-
-    if (decoded.stage !== 'pin_required') {
-      return res.status(403).json({
-        success: false,
-        message: 'Invalid verification sequence.',
+        message: 'Session expired. Please log in again.',
       });
     }
 
     const cleanUserId = decoded.userId;
 
     let user = null;
-    try {
-      user = await User.findOne({ userId: cleanUserId });
-    } catch {
-      user = null;
+    if (mongoose.connection.readyState === 1) {
+      try {
+        user = await User.findOne({ userId: cleanUserId });
+      } catch {
+        user = null;
+      }
     }
 
     if (!user) {
@@ -203,7 +174,7 @@ const loginStep2 = async (req, res) => {
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: 'User identity lost.',
+        message: 'User not found.',
       });
     }
 
@@ -219,11 +190,10 @@ const loginStep2 = async (req, res) => {
     if (!pinMatch) {
       return res.status(401).json({
         success: false,
-        message: 'Incorrect 4-digit Secret PIN.',
+        message: 'Incorrect PIN.',
       });
     }
 
-    // Generate Full Session Token (Zero-trace: only held in volatile client memory)
     const sessionToken = jwt.sign(
       {
         userId: user.userId,
@@ -237,10 +207,12 @@ const loginStep2 = async (req, res) => {
 
     // Get partner info
     let partner = null;
-    try {
-      partner = await User.findOne({ userId: user.partnerId }).select('userId displayName vibeStatus');
-    } catch {
-      partner = null;
+    if (mongoose.connection.readyState === 1) {
+      try {
+        partner = await User.findOne({ userId: user.partnerId }).select('userId displayName avatarUrl lastSeen vibeStatus');
+      } catch {
+        partner = null;
+      }
     }
 
     if (!partner && memoryStore.users.has(user.partnerId)) {
@@ -248,23 +220,28 @@ const loginStep2 = async (req, res) => {
       partner = {
         userId: p.userId,
         displayName: p.displayName,
+        avatarUrl: p.avatarUrl || null,
+        lastSeen: p.lastSeen || new Date(),
         vibeStatus: p.vibeStatus,
       };
     }
 
     return res.status(200).json({
       success: true,
-      message: 'Access Granted. Entering secure room.',
       token: sessionToken,
       user: {
         userId: user.userId,
         displayName: user.displayName,
+        avatarUrl: user.avatarUrl || null,
         partnerId: user.partnerId,
+        lastSeen: user.lastSeen || new Date(),
         vibeStatus: user.vibeStatus,
       },
       partner: partner || {
         userId: user.partnerId,
-        displayName: 'My Partner',
+        displayName: 'Partner',
+        avatarUrl: null,
+        lastSeen: new Date(),
         vibeStatus: { emoji: '💖', text: 'Online' },
       },
     });
@@ -272,13 +249,13 @@ const loginStep2 = async (req, res) => {
     console.error('Login Step 2 Error:', error);
     return res.status(500).json({
       success: false,
-      message: 'PIN verification service error.',
+      message: 'PIN verification failed.',
     });
   }
 };
 
 /**
- * Get current user profile and partner details
+ * Get profile
  */
 const getProfile = async (req, res) => {
   try {
@@ -287,25 +264,34 @@ const getProfile = async (req, res) => {
     let user = null;
     let partner = null;
 
-    try {
-      user = await User.findOne({ userId }).select('-passwordHash -pinHash');
-      partner = await User.findOne({ userId: partnerId }).select('userId displayName vibeStatus');
-    } catch {
-      user = memoryStore.users.get(userId);
-      partner = memoryStore.users.get(partnerId);
+    if (mongoose.connection.readyState === 1) {
+      try {
+        user = await User.findOne({ userId }).select('-passwordHash -pinHash');
+        partner = await User.findOne({ userId: partnerId }).select('userId displayName avatarUrl lastSeen vibeStatus');
+      } catch {
+        user = null;
+        partner = null;
+      }
     }
+
+    if (!user) user = memoryStore.users.get(userId);
+    if (!partner) partner = memoryStore.users.get(partnerId);
 
     return res.json({
       success: true,
       user: {
         userId: user?.userId || userId,
         displayName: user?.displayName || req.user.displayName,
+        avatarUrl: user?.avatarUrl || null,
+        lastSeen: user?.lastSeen || new Date(),
         vibeStatus: user?.vibeStatus || { emoji: '💖', text: 'Active' },
       },
       partner: {
         userId: partner?.userId || partnerId,
-        displayName: partner?.displayName || 'My Partner',
-        vibeStatus: partner?.vibeStatus || { emoji: '💖', text: 'Connected' },
+        displayName: partner?.displayName || 'Partner',
+        avatarUrl: partner?.avatarUrl || null,
+        lastSeen: partner?.lastSeen || new Date(),
+        vibeStatus: partner?.vibeStatus || { emoji: '💖', text: 'Active' },
       },
     });
   } catch (error) {
@@ -313,10 +299,67 @@ const getProfile = async (req, res) => {
   }
 };
 
+/**
+ * Update Profile Settings (Name, Avatar, Password, PIN)
+ */
+const updateProfile = async (req, res) => {
+  try {
+    const { userId } = req.user;
+    const { displayName, avatarUrl, newPassword, newPin } = req.body;
+
+    const updates = {};
+    if (displayName && displayName.trim()) {
+      updates.displayName = displayName.trim();
+    }
+    if (avatarUrl !== undefined) {
+      updates.avatarUrl = avatarUrl;
+    }
+    if (newPassword && newPassword.length >= 6) {
+      updates.passwordHash = await bcrypt.hash(newPassword, 10);
+    }
+    if (newPin && newPin.length === 4) {
+      const pepper = process.env.PIN_PEPPER || '';
+      updates.pinHash = await bcrypt.hash(newPin + pepper, 10);
+    }
+
+    let updatedUser = null;
+    if (mongoose.connection.readyState === 1) {
+      try {
+        updatedUser = await User.findOneAndUpdate(
+          { userId },
+          updates,
+          { new: true }
+        ).select('-passwordHash -pinHash');
+      } catch {
+        updatedUser = null;
+      }
+    }
+
+    if (memoryStore.users.has(userId)) {
+      const u = memoryStore.users.get(userId);
+      Object.assign(u, updates);
+      if (!updatedUser) updatedUser = u;
+    }
+
+    return res.json({
+      success: true,
+      message: 'Profile updated successfully.',
+      user: {
+        userId,
+        displayName: updatedUser?.displayName || updates.displayName || req.user.displayName,
+        avatarUrl: updatedUser?.avatarUrl || updates.avatarUrl || null,
+      },
+    });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    return res.status(500).json({ success: false, message: 'Could not update profile.' });
+  }
+};
+
 module.exports = {
   loginStep1,
   loginStep2,
   getProfile,
+  updateProfile,
   memoryStore,
 };
-

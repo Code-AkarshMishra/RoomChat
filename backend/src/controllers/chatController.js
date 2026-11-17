@@ -1,6 +1,6 @@
+const mongoose = require('mongoose');
 const Message = require('../models/Message');
 const User = require('../models/User');
-const CoupleMeta = require('../models/CoupleMeta');
 const { uploadToCloudinary } = require('../config/cloudinary');
 const { memoryStore } = require('./authController');
 
@@ -10,27 +10,31 @@ const { memoryStore } = require('./authController');
 const getMessages = async (req, res) => {
   try {
     const { userId, partnerId } = req.user;
-    const limit = parseInt(req.query.limit, 10) || 50;
+    const limit = parseInt(req.query.limit, 10) || 100;
 
     let messages = [];
-    try {
-      messages = await Message.find({
-        $or: [
-          { sender: userId, receiver: partnerId },
-          { sender: partnerId, receiver: userId },
-        ],
-      })
-        .sort({ createdAt: -1 })
-        .limit(limit)
-        .lean();
+    if (mongoose.connection.readyState === 1) {
+      try {
+        messages = await Message.find({
+          $or: [
+            { sender: userId, receiver: partnerId },
+            { sender: partnerId, receiver: userId },
+          ],
+        })
+          .sort({ createdAt: -1 })
+          .limit(limit)
+          .lean();
 
-      messages = messages.reverse();
-    } catch {
-      // Memory store fallback
+        messages = messages.reverse();
+      } catch (err) {
+        messages = [];
+      }
+    }
+
+    if (!messages || messages.length === 0) {
       messages = memoryStore.messages.slice(-limit);
     }
 
-    // Clean up burned notes so content is never leaked
     const safeMessages = messages.map((m) => {
       if (m.isBurnNote && m.isBurned) {
         return {
@@ -52,7 +56,137 @@ const getMessages = async (req, res) => {
 };
 
 /**
- * Upload Rich Media (Live Camera, Gallery Photo/Video, Voice Note) to Cloudinary
+ * Clear Chat History (Deletes all messages from both sides and database)
+ */
+const clearChatHistory = async (req, res) => {
+  try {
+    const { userId, partnerId } = req.user;
+
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await Message.deleteMany({
+          $or: [
+            { sender: userId, receiver: partnerId },
+            { sender: partnerId, receiver: userId },
+          ],
+        });
+      } catch (dbErr) {
+        console.warn('DB clear error:', dbErr.message);
+      }
+    }
+
+    // Clear memory store messages
+    memoryStore.messages = [];
+
+    return res.json({
+      success: true,
+      message: 'Chat history cleared completely from both sides.',
+    });
+  } catch (error) {
+    console.error('Clear chat error:', error);
+    return res.status(500).json({ success: false, message: 'Could not clear chat history.' });
+  }
+};
+
+/**
+ * Delete Individual Message
+ */
+const deleteMessage = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await Message.findByIdAndUpdate(messageId, {
+          isDeleted: true,
+          text: 'This message was deleted',
+          mediaUrl: null,
+        });
+      } catch (dbErr) {
+        console.warn('DB delete message error:', dbErr.message);
+      }
+    }
+
+    // Update memoryStore
+    const msg = memoryStore.messages.find((m) => m._id?.toString() === messageId);
+    if (msg) {
+      msg.isDeleted = true;
+      msg.text = 'This message was deleted';
+      msg.mediaUrl = null;
+    }
+
+    return res.json({
+      success: true,
+      message: 'Message deleted.',
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * React to a message
+ */
+const reactMessage = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { emoji } = req.body;
+    const { userId } = req.user;
+
+    if (!emoji) {
+      return res.status(400).json({ success: false, message: 'Emoji required.' });
+    }
+
+    let updatedMsg = null;
+    if (mongoose.connection.readyState === 1) {
+      try {
+        const msg = await Message.findById(messageId);
+        if (msg) {
+          const existingIdx = msg.reactions.findIndex((r) => r.userId === userId);
+          if (existingIdx !== -1) {
+            if (msg.reactions[existingIdx].emoji === emoji) {
+              msg.reactions.splice(existingIdx, 1); // Toggle off if clicked same emoji
+            } else {
+              msg.reactions[existingIdx].emoji = emoji;
+            }
+          } else {
+            msg.reactions.push({ userId, emoji });
+          }
+          await msg.save();
+          updatedMsg = msg.toObject();
+        }
+      } catch (dbErr) {
+        console.warn('DB react error:', dbErr.message);
+      }
+    }
+
+    const memMsg = memoryStore.messages.find((m) => m._id?.toString() === messageId);
+    if (memMsg) {
+      if (!memMsg.reactions) memMsg.reactions = [];
+      const existingIdx = memMsg.reactions.findIndex((r) => r.userId === userId);
+      if (existingIdx !== -1) {
+        if (memMsg.reactions[existingIdx].emoji === emoji) {
+          memMsg.reactions.splice(existingIdx, 1);
+        } else {
+          memMsg.reactions[existingIdx].emoji = emoji;
+        }
+      } else {
+        memMsg.reactions.push({ userId, emoji });
+      }
+      if (!updatedMsg) updatedMsg = memMsg;
+    }
+
+    return res.json({
+      success: true,
+      reactions: updatedMsg?.reactions || [],
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * Upload Rich Media (Live Camera, Gallery, Audio Voice Notes)
  */
 const uploadMedia = async (req, res) => {
   try {
@@ -63,11 +197,11 @@ const uploadMedia = async (req, res) => {
       });
     }
 
-    const { type } = req.body; // 'image', 'video', 'audio'
+    const { type } = req.body;
     let resourceType = 'auto';
     if (type === 'image') resourceType = 'image';
     if (type === 'video') resourceType = 'video';
-    if (type === 'audio') resourceType = 'video'; // Cloudinary handles audio under video resource_type
+    if (type === 'audio') resourceType = 'video';
 
     const uploadResult = await uploadToCloudinary(
       req.file.buffer,
@@ -93,22 +227,26 @@ const uploadMedia = async (req, res) => {
 };
 
 /**
- * Handle Burn-After-Reading note open/destruct
+ * Burn-after-reading note
  */
 const burnNoteAction = async (req, res) => {
   try {
-    const { messageId, action } = req.body; // action: 'view' | 'destruct'
-    const { userId } = req.user;
+    const { messageId, action } = req.body;
 
     let message = null;
-    try {
-      message = await Message.findById(messageId);
-    } catch {
+    if (mongoose.connection.readyState === 1) {
+      try {
+        message = await Message.findById(messageId);
+      } catch {
+        message = null;
+      }
+    }
+    if (!message) {
       message = memoryStore.messages.find((m) => m._id?.toString() === messageId);
     }
 
     if (!message) {
-      return res.status(404).json({ success: false, message: 'Note not found or already gone.' });
+      return res.status(404).json({ success: false, message: 'Note not found.' });
     }
 
     if (action === 'view') {
@@ -128,11 +266,7 @@ const burnNoteAction = async (req, res) => {
       message.isBurned = true;
       message.text = '🔥 This secret note has self-destructed.';
       if (typeof message.save === 'function') await message.save();
-
-      return res.json({
-        success: true,
-        message: 'Note incinerated completely.',
-      });
+      return res.json({ success: true });
     }
 
     return res.status(400).json({ success: false, message: 'Invalid action' });
@@ -142,7 +276,7 @@ const burnNoteAction = async (req, res) => {
 };
 
 /**
- * Update personal Vibe Status
+ * Update Vibe Status
  */
 const updateVibe = async (req, res) => {
   try {
@@ -155,17 +289,21 @@ const updateVibe = async (req, res) => {
       updatedAt: new Date(),
     };
 
-    try {
-      await User.findOneAndUpdate(
-        { userId },
-        { vibeStatus: newVibe },
-        { new: true }
-      );
-    } catch {
-      if (memoryStore.users.has(userId)) {
-        const u = memoryStore.users.get(userId);
-        u.vibeStatus = newVibe;
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await User.findOneAndUpdate(
+          { userId },
+          { vibeStatus: newVibe },
+          { new: true }
+        );
+      } catch (err) {
+        console.warn('DB update vibe error:', err.message);
       }
+    }
+
+    if (memoryStore.users.has(userId)) {
+      const u = memoryStore.users.get(userId);
+      u.vibeStatus = newVibe;
     }
 
     return res.json({
@@ -177,72 +315,12 @@ const updateVibe = async (req, res) => {
   }
 };
 
-/**
- * Get Couple Countdown & Romantic Meta
- */
-const getCoupleMeta = async (req, res) => {
-  try {
-    let meta = null;
-    try {
-      meta = await CoupleMeta.findOne({ coupleId: 'couple_primary' });
-    } catch {
-      meta = memoryStore.coupleMeta;
-    }
-
-    if (!meta) {
-      meta = memoryStore.coupleMeta;
-    }
-
-    return res.json({
-      success: true,
-      data: meta,
-    });
-  } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-/**
- * Update Couple Countdown
- */
-const updateCoupleMeta = async (req, res) => {
-  try {
-    const { countdownTitle, countdownTargetDate, anniversaryDate, notes } = req.body;
-
-    const updateData = {
-      ...(countdownTitle && { countdownTitle }),
-      ...(countdownTargetDate && { countdownTargetDate: new Date(countdownTargetDate) }),
-      ...(anniversaryDate && { anniversaryDate: new Date(anniversaryDate) }),
-      ...(notes && { notes }),
-    };
-
-    let meta = null;
-    try {
-      meta = await CoupleMeta.findOneAndUpdate(
-        { coupleId: 'couple_primary' },
-        updateData,
-        { upsert: true, new: true }
-      );
-    } catch {
-      Object.assign(memoryStore.coupleMeta, updateData);
-      meta = memoryStore.coupleMeta;
-    }
-
-    return res.json({
-      success: true,
-      data: meta,
-    });
-  } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
-  }
-};
-
 module.exports = {
   getMessages,
+  clearChatHistory,
+  deleteMessage,
+  reactMessage,
   uploadMedia,
   burnNoteAction,
   updateVibe,
-  getCoupleMeta,
-  updateCoupleMeta,
 };
-

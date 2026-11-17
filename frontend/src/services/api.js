@@ -34,7 +34,7 @@ const request = async (endpoint, options = {}) => {
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.message || `Request failed with status ${res.status}`);
+    throw new Error(data.message || `Request failed (${res.status})`);
   }
   return data;
 };
@@ -47,7 +47,7 @@ export const apiLoginStep1 = async (userId, password) => {
   });
 };
 
-// 2. Step 2: 4-digit Secret PIN Gate
+// 2. Step 2: 4-digit PIN Gate
 export const apiLoginStep2 = async (partialToken, pin) => {
   return request('/api/auth/login-step2', {
     method: 'POST',
@@ -60,12 +60,41 @@ export const apiGetProfile = async () => {
   return request('/api/auth/profile');
 };
 
+export const apiUpdateProfile = async (profileData) => {
+  return request('/api/auth/profile', {
+    method: 'PUT',
+    body: JSON.stringify(profileData),
+  });
+};
+
 // 4. Fetch Messages
-export const apiGetMessages = async (limit = 60) => {
+export const apiGetMessages = async (limit = 100) => {
   return request(`/api/chat/messages?limit=${limit}`);
 };
 
-// 5. Upload Media File (Camera, Gallery, Audio)
+// 5. Clear Entire Chat History
+export const apiClearChat = async () => {
+  return request('/api/chat/messages', {
+    method: 'DELETE',
+  });
+};
+
+// 6. Delete Individual Message
+export const apiDeleteMessage = async (messageId) => {
+  return request(`/api/chat/messages/${messageId}`, {
+    method: 'DELETE',
+  });
+};
+
+// 7. React to Message
+export const apiReactMessage = async (messageId, emoji) => {
+  return request(`/api/chat/messages/${messageId}/react`, {
+    method: 'POST',
+    body: JSON.stringify({ emoji }),
+  });
+};
+
+// 8. Upload Media File (Camera, Gallery, Audio)
 export const apiUploadMedia = async (file, type) => {
   const formData = new FormData();
   formData.append('media', file);
@@ -87,7 +116,7 @@ export const apiUploadMedia = async (file, type) => {
   return data;
 };
 
-// 6. Burn Note action (view, destruct)
+// 9. Burn Note action
 export const apiBurnNoteAction = async (messageId, action) => {
   return request('/api/chat/burn-note', {
     method: 'POST',
@@ -95,23 +124,10 @@ export const apiBurnNoteAction = async (messageId, action) => {
   });
 };
 
-// 7. Update Vibe
+// 10. Update Vibe
 export const apiUpdateVibe = async (emoji, text) => {
   return request('/api/chat/vibe', {
     method: 'POST',
     body: JSON.stringify({ emoji, text }),
   });
 };
-
-// 8. Couple Metadata (Countdown, Notes)
-export const apiGetCoupleMeta = async () => {
-  return request('/api/chat/couple-meta');
-};
-
-export const apiUpdateCoupleMeta = async (metaData) => {
-  return request('/api/chat/couple-meta', {
-    method: 'PUT',
-    body: JSON.stringify(metaData),
-  });
-};
-

@@ -41,23 +41,38 @@ const setupSocketHandlers = (io) => {
     // Update lastSeen and notify room
     const isPartnerOnline = onlineUsers.has(partnerId) && onlineUsers.get(partnerId).size > 0;
 
-    // Fetch partner's last seen
-    let partnerLastSeen = new Date();
+    // Fetch partner's actual last seen and last login
+    let partnerLastSeen = null;
+    let partnerLastLogin = null;
     if (mongoose.connection.readyState === 1) {
       try {
-        const pDoc = await User.findOne({ userId: partnerId }).select('lastSeen');
+        const pDoc = await User.findOne({ userId: partnerId }).select('lastSeen lastLogin');
         if (pDoc?.lastSeen) partnerLastSeen = pDoc.lastSeen;
+        if (pDoc?.lastLogin) partnerLastLogin = pDoc.lastLogin;
       } catch {}
     } else if (memoryStore.users.has(partnerId)) {
-      partnerLastSeen = memoryStore.users.get(partnerId).lastSeen || new Date();
+      const p = memoryStore.users.get(partnerId);
+      partnerLastSeen = p.lastSeen || null;
+      partnerLastLogin = p.lastLogin || null;
     }
 
-    io.to(roomId).emit('presence_status', {
-      userId,
-      isOnline: true,
+    // 1. Send to newly connected socket their partner's presence
+    socket.emit('presence_status', {
+      userId: partnerId,
+      isOnline: isPartnerOnline,
+      lastSeen: partnerLastSeen,
+      lastLogin: partnerLastLogin,
       partnerOnline: isPartnerOnline,
-      lastSeen: new Date(),
-      partnerLastSeen,
+      partnerLastSeen: partnerLastSeen,
+    });
+
+    // 2. Notify partner that this user is now online
+    socket.to(roomId).emit('presence_status', {
+      userId: userId,
+      isOnline: true,
+      lastSeen: null,
+      partnerOnline: true,
+      partnerLastSeen: null,
     });
 
     // Latency Ping
@@ -298,7 +313,45 @@ const setupSocketHandlers = (io) => {
       } catch (err) {}
     });
 
-    // 9. Disconnect Handler (Record Last Seen)
+    // 9. WebRTC Calling Signaling (Voice & Video)
+    socket.on('call_user', (payload) => {
+      socket.to(roomId).emit('incoming_call', {
+        callerId: userId,
+        callerName: displayName,
+        callType: payload.callType || 'video', // 'video' | 'audio'
+        offer: payload.offer,
+      });
+    });
+
+    socket.on('answer_call', (payload) => {
+      socket.to(roomId).emit('call_answered', {
+        responderId: userId,
+        answer: payload.answer,
+      });
+    });
+
+    socket.on('ice_candidate', (payload) => {
+      socket.to(roomId).emit('ice_candidate', {
+        senderId: userId,
+        candidate: payload.candidate,
+      });
+    });
+
+    socket.on('reject_call', (payload) => {
+      socket.to(roomId).emit('call_rejected', {
+        by: userId,
+        reason: payload?.reason || 'declined',
+      });
+    });
+
+    socket.on('end_call', (payload) => {
+      socket.to(roomId).emit('call_ended', {
+        by: userId,
+        reason: payload?.reason || 'ended',
+      });
+    });
+
+    // 10. Disconnect Handler (Record Last Seen accurately)
     socket.on('disconnect', async () => {
       const now = new Date();
       if (onlineUsers.has(userId)) {
@@ -310,18 +363,21 @@ const setupSocketHandlers = (io) => {
           // Update lastSeen in DB / memory
           if (mongoose.connection.readyState === 1) {
             try {
-              await User.findOneAndUpdate({ userId }, { lastSeen: now });
+              await User.findOneAndUpdate({ userId }, { lastSeen: now, lastActive: now });
             } catch {}
           }
           if (memoryStore.users.has(userId)) {
             memoryStore.users.get(userId).lastSeen = now;
+            memoryStore.users.get(userId).lastActive = now;
           }
 
-          io.to(roomId).emit('presence_status', {
+          // Emit to partner in roomId
+          socket.to(roomId).emit('presence_status', {
             userId,
             isOnline: false,
             partnerOnline: false,
             lastSeen: now,
+            partnerLastSeen: now,
           });
         }
       }

@@ -5,6 +5,7 @@ import MessageInput from './MessageInput';
 import LiveCameraModal from '../Modals/LiveCameraModal';
 import ImageLightboxModal from '../Modals/ImageLightboxModal';
 import SettingsModal from '../Modals/SettingsModal';
+import CallModal from '../Modals/CallModal';
 import { 
   apiGetMessages, 
   apiBurnNoteAction, 
@@ -13,6 +14,7 @@ import {
   clearAuthToken 
 } from '../../services/api';
 import { initSocket, getSocket, disconnectSocket } from '../../services/socket';
+import { sounds } from '../../utils/soundEffects';
 
 export default function ChatApp({ sessionUser, initialPartner, onPanicExit, theme, onToggleTheme }) {
   const [currentUser, setCurrentUser] = useState(sessionUser);
@@ -23,31 +25,82 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
   const [messages, setMessages] = useState([]);
   const [replyingTo, setReplyingTo] = useState(null);
 
+  // Multi-theme wallpaper
+  const [activeWallpaper, setActiveWallpaper] = useState(() => {
+    return localStorage.getItem('roomchat_wallpaper') || 'midnight-violet';
+  });
+
+  // Browser Notifications toggle
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
+    return localStorage.getItem('roomchat_notifications') === 'true';
+  });
+
+  // WebRTC Call state
+  const [callState, setCallState] = useState(null);
+
   // Modals state
   const [cameraOpen, setCameraOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [lightboxImageUrl, setLightboxImageUrl] = useState(null);
 
+  // Ref to track if media picker, camera, or call is currently open (to prevent accidental panic exit on mobile)
+  const isBusyRef = useRef(false);
+  isBusyRef.current = cameraOpen || Boolean(callState) || settingsOpen;
+
   const isDark = theme === 'dark';
 
-  // 🚨 CRITICAL PARANOIA SECURITY:
-  // If user switches tab or presses browser back button, immediately wipe session & exit to cover!
+  // Wallpaper change handler
+  const handleSelectWallpaper = (wpId) => {
+    setActiveWallpaper(wpId);
+    localStorage.setItem('roomchat_wallpaper', wpId);
+  };
+
+  // Toggle browser push notifications
+  const handleToggleNotifications = async () => {
+    if (!('Notification' in window)) {
+      alert('This browser does not support desktop notifications.');
+      return;
+    }
+
+    if (Notification.permission === 'granted') {
+      const next = !notificationsEnabled;
+      setNotificationsEnabled(next);
+      localStorage.setItem('roomchat_notifications', String(next));
+    } else {
+      const perm = await Notification.requestPermission();
+      if (perm === 'granted') {
+        setNotificationsEnabled(true);
+        localStorage.setItem('roomchat_notifications', 'true');
+        new Notification('RoomChat Notifications Enabled', {
+          body: 'You will receive instant alerts when your partner messages you.',
+          icon: partner?.avatarUrl || '/favicon.svg',
+        });
+      } else {
+        alert('Notification permission was denied in your browser settings.');
+      }
+    }
+  };
+
+  // 🚨 Emergency Stealth & Tab Switch Detection (Safe on mobile during calls/camera)
   useEffect(() => {
-    // 1. Tab switch / screen minimize detection
     const handleVisibilityChange = () => {
-      if (document.hidden) {
+      // Don't panic exit if user is actively in a camera modal or WebRTC call!
+      if (document.hidden && !isBusyRef.current) {
+        // Tab minimize / app backgrounded
+        // Clean disconnect
         disconnectSocket();
         clearAuthToken();
         onPanicExit();
       }
     };
 
-    // 2. Browser back button detection
     window.history.pushState(null, '', window.location.href);
     const handlePopState = () => {
-      disconnectSocket();
-      clearAuthToken();
-      onPanicExit();
+      if (!isBusyRef.current) {
+        disconnectSocket();
+        clearAuthToken();
+        onPanicExit();
+      }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -79,18 +132,18 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
     const socket = initSocket();
     if (!socket) return;
 
-    // Presence & Last Seen
+    // Presence & Last Seen updates
     socket.on('presence_status', (data) => {
       if (data.userId === partner?.userId) {
-        setIsPartnerOnline(data.isOnline);
-        if (data.lastSeen) {
+        setIsPartnerOnline(Boolean(data.isOnline));
+        if (data.lastSeen !== undefined) {
           setPartner((prev) => ({ ...prev, lastSeen: data.lastSeen }));
         }
       }
       if (data.partnerOnline !== undefined) {
-        setIsPartnerOnline(data.partnerOnline);
+        setIsPartnerOnline(Boolean(data.partnerOnline));
       }
-      if (data.partnerLastSeen) {
+      if (data.partnerLastSeen !== undefined) {
         setPartner((prev) => ({ ...prev, lastSeen: data.partnerLastSeen }));
       }
     });
@@ -112,10 +165,38 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
         return [...prev, newMsg];
       });
 
+      // If message is from partner:
       if (newMsg.sender === partner?.userId) {
         socket.emit('message_delivered', { messageId: newMsg._id });
         socket.emit('message_read', { messageId: newMsg._id });
+
+        // Play gentle audio sound ping
+        sounds.playMessagePing();
+
+        // Trigger browser notification if enabled
+        if (localStorage.getItem('roomchat_notifications') === 'true' && 'Notification' in window && Notification.permission === 'granted') {
+          try {
+            const previewText = newMsg.text || (newMsg.type === 'image' ? '📷 Photo' : newMsg.type === 'audio' ? '🎵 Voice note' : 'New message');
+            new Notification(partner?.displayName || 'Partner', {
+              body: previewText,
+              icon: partner?.avatarUrl || '/favicon.svg',
+              tag: 'roomchat_msg',
+            });
+          } catch {}
+        }
       }
+    });
+
+    // WebRTC Incoming Call from Partner
+    socket.on('incoming_call', (data) => {
+      setCallState({
+        mode: 'incoming',
+        callType: data.callType || 'video',
+        callerName: data.callerName || partner?.displayName || 'Partner',
+        callerAvatar: partner?.avatarUrl || null,
+        callerId: data.callerId,
+        offer: data.offer,
+      });
     });
 
     // Message Deleted for Everyone
@@ -176,7 +257,7 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
     return () => {
       disconnectSocket();
     };
-  }, [partner?.userId]);
+  }, [partner?.userId, partner?.displayName, partner?.avatarUrl]);
 
   // Actions
   const handleSendMessage = (messagePayload) => {
@@ -225,7 +306,6 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
   const handleDeleteMessage = async (messageId) => {
     if (!window.confirm('Delete this message for everyone?')) return;
 
-    // Optimistic delete
     setMessages((prev) =>
       prev.map((m) =>
         m._id === messageId
@@ -275,23 +355,40 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
     }
   };
 
+  // Start outgoing call
+  const handleStartCall = (callType) => {
+    setCallState({
+      mode: 'outgoing',
+      callType: callType || 'video',
+      callerName: partner?.displayName || 'Partner',
+      callerAvatar: partner?.avatarUrl || null,
+      callerId: partner?.userId,
+    });
+  };
+
   return (
-    <div className={`h-[100dvh] max-h-[100dvh] flex flex-col justify-between overflow-hidden ${isDark ? 'bg-slate-950 text-white' : 'bg-slate-50 text-slate-900'} transition-colors`}>
-      {/* Top Header */}
+    <div className="fixed inset-0 h-[100dvh] max-h-[100dvh] w-full flex flex-col justify-between overflow-hidden bg-[#0a081a] text-white select-none transition-colors">
+      {/* Fixed Top Header */}
       <ChatHeader
         partner={partner}
         isPartnerOnline={isPartnerOnline}
+        onStartCall={handleStartCall}
+        notificationsEnabled={notificationsEnabled}
+        onToggleNotifications={handleToggleNotifications}
+        activeWallpaper={activeWallpaper}
+        onSelectWallpaper={handleSelectWallpaper}
         onPanicExit={onPanicExit}
         onOpenSettings={() => setSettingsOpen(true)}
         theme={theme}
       />
 
-      {/* Message List */}
+      {/* Scrollable Message List with Multi-Theme Wallpaper */}
       <MessageList
         messages={messages}
         currentUser={currentUser}
         partner={partner}
         isPartnerTyping={isPartnerTyping}
+        activeWallpaper={activeWallpaper}
         theme={theme}
         onReply={handleReplyMessage}
         onDelete={handleDeleteMessage}
@@ -300,7 +397,7 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
         onImageClick={(url) => setLightboxImageUrl(url)}
       />
 
-      {/* Message Input Toolbar */}
+      {/* Fixed Bottom Message Input Toolbar */}
       <MessageInput
         onSendMessage={handleSendMessage}
         onTypingStart={() => getSocket()?.emit('typing_start')}
@@ -311,13 +408,23 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
         theme={theme}
       />
 
-      {/* Modals */}
+      {/* WebRTC Video & Voice Call Modal */}
+      <CallModal
+        callState={callState}
+        partner={partner}
+        currentUser={currentUser}
+        socket={getSocket()}
+        onClose={() => setCallState(null)}
+      />
+
+      {/* Camera Modal */}
       <LiveCameraModal
         isOpen={cameraOpen}
         onClose={() => setCameraOpen(false)}
         onSendCapturedMedia={handleSendMessage}
       />
 
+      {/* Settings Modal */}
       <SettingsModal
         isOpen={settingsOpen}
         onClose={() => setSettingsOpen(false)}
@@ -329,6 +436,7 @@ export default function ChatApp({ sessionUser, initialPartner, onPanicExit, them
         onPanicExit={onPanicExit}
       />
 
+      {/* Image Lightbox */}
       <ImageLightboxModal
         imageUrl={lightboxImageUrl}
         onClose={() => setLightboxImageUrl(null)}

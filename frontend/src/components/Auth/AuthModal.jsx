@@ -113,21 +113,21 @@ export default function AuthModal({ onAuthenticated, onClose, theme }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className={`w-full max-w-sm ${isDark ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-slate-200 text-slate-900'} border rounded-3xl p-6 shadow-2xl relative`}>
+    <div className="fixed inset-0 z-50 bg-[#090717]/80 backdrop-blur-md flex items-center justify-center p-4">
+      <div className={`w-full max-w-sm ${isDark ? 'bg-[#120f2e] border-violet-500/30 text-white' : 'bg-white border-slate-200 text-slate-900'} border rounded-3xl p-6 shadow-2xl relative`}>
         <button
           onClick={onClose}
-          className={`absolute top-4 right-4 p-2 rounded-full ${isDark ? 'text-slate-400 hover:text-white hover:bg-slate-800' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'}`}
+          className={`absolute top-4 right-4 p-2 rounded-full ${isDark ? 'text-violet-400 hover:text-white hover:bg-violet-800/30' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'}`}
         >
           <X className="w-5 h-5" />
         </button>
 
-        <h2 className="text-xl font-bold tracking-tight mb-4">
-          Login
+        <h2 className="text-xl font-bold tracking-tight mb-4 text-violet-100">
+          Secure Login
         </h2>
 
         {errorMessage && (
-          <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-xs flex items-center gap-2">
+          <div className="mb-4 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
             <AlertCircle className="w-4 h-4 flex-shrink-0" />
             <span>{errorMessage}</span>
           </div>
@@ -136,7 +136,7 @@ export default function AuthModal({ onAuthenticated, onClose, theme }) {
         {step === 1 ? (
           <form onSubmit={handleSubmitStep1} className="space-y-4">
             <div>
-              <label className={`text-xs font-medium ${isDark ? 'text-slate-400' : 'text-slate-600'} block mb-1`}>
+              <label className={`text-xs font-medium ${isDark ? 'text-violet-300' : 'text-slate-600'} block mb-1`}>
                 User ID
               </label>
               <input
@@ -144,13 +144,13 @@ export default function AuthModal({ onAuthenticated, onClose, theme }) {
                 required
                 value={userId}
                 onChange={(e) => setUserId(e.target.value)}
-                className={`w-full ${isDark ? 'bg-slate-950 border-slate-800 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'} border rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-indigo-500`}
+                className={`w-full ${isDark ? 'bg-[#181438] border-violet-500/30 text-white focus:border-violet-400' : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-indigo-500'} border rounded-xl px-3.5 py-2.5 text-sm focus:outline-none transition-colors`}
                 autoFocus
               />
             </div>
 
             <div>
-              <label className={`text-xs font-medium ${isDark ? 'text-slate-400' : 'text-slate-600'} block mb-1`}>
+              <label className={`text-xs font-medium ${isDark ? 'text-violet-300' : 'text-slate-600'} block mb-1`}>
                 Password
               </label>
               <input
@@ -158,22 +158,22 @@ export default function AuthModal({ onAuthenticated, onClose, theme }) {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className={`w-full ${isDark ? 'bg-slate-950 border-slate-800 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'} border rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:border-indigo-500`}
+                className={`w-full ${isDark ? 'bg-[#181438] border-violet-500/30 text-white focus:border-violet-400' : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-indigo-500'} border rounded-xl px-3.5 py-2.5 text-sm focus:outline-none transition-colors`}
               />
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="w-full mt-2 py-3 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-xl flex items-center justify-center gap-2 shadow-sm disabled:opacity-50 transition-colors"
+              className="w-full mt-2 py-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-sm font-semibold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-violet-950/50 disabled:opacity-50 transition-all active:scale-95"
             >
               {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : 'Proceed'}
             </button>
           </form>
         ) : (
           <div>
-            <label className={`text-xs font-medium ${isDark ? 'text-slate-400' : 'text-slate-600'} block text-center mb-3`}>
-              Enter 4-Digit PIN
+            <label className={`text-xs font-medium ${isDark ? 'text-violet-300' : 'text-slate-600'} block text-center mb-3`}>
+              Enter 4-Digit Secret PIN
             </label>
 
             {/* PIN Bubbles */}
@@ -183,8 +183,8 @@ export default function AuthModal({ onAuthenticated, onClose, theme }) {
                   key={index}
                   className={`w-4 h-4 rounded-full transition-all ${
                     pin.length > index
-                      ? 'bg-indigo-500 scale-110 shadow-sm'
-                      : (isDark ? 'border-2 border-slate-700 bg-slate-950' : 'border-2 border-slate-300 bg-slate-100')
+                      ? 'bg-violet-500 scale-110 shadow-md shadow-violet-500/50'
+                      : (isDark ? 'border-2 border-violet-500/40 bg-[#181438]' : 'border-2 border-slate-300 bg-slate-100')
                   }`}
                 />
               ))}
@@ -198,7 +198,7 @@ export default function AuthModal({ onAuthenticated, onClose, theme }) {
                   type="button"
                   disabled={loading || pin.length >= 4}
                   onClick={() => handlePinInput(digit)}
-                  className={`h-11 ${isDark ? 'bg-slate-800 hover:bg-slate-700 text-white border-slate-700/60' : 'bg-slate-100 hover:bg-slate-200 text-slate-900 border-slate-200'} border text-base font-semibold rounded-xl active:scale-95 transition-all`}
+                  className={`h-11 ${isDark ? 'bg-[#19153b] hover:bg-[#231d52] text-white border-violet-500/30' : 'bg-slate-100 hover:bg-slate-200 text-slate-900 border-slate-200'} border text-base font-semibold rounded-xl active:scale-95 transition-all`}
                 >
                   {digit}
                 </button>
@@ -207,7 +207,7 @@ export default function AuthModal({ onAuthenticated, onClose, theme }) {
               <button
                 type="button"
                 onClick={() => setPin('')}
-                className={`h-11 ${isDark ? 'bg-slate-800/40 text-slate-400' : 'bg-slate-50 text-slate-500'} text-xs font-medium rounded-xl`}
+                className={`h-11 ${isDark ? 'bg-[#19153b]/50 text-violet-400' : 'bg-slate-50 text-slate-500'} text-xs font-medium rounded-xl`}
               >
                 Clear
               </button>
@@ -216,7 +216,7 @@ export default function AuthModal({ onAuthenticated, onClose, theme }) {
                 type="button"
                 disabled={loading || pin.length >= 4}
                 onClick={() => handlePinInput('0')}
-                className={`h-11 ${isDark ? 'bg-slate-800 hover:bg-slate-700 text-white border-slate-700/60' : 'bg-slate-100 hover:bg-slate-200 text-slate-900 border-slate-200'} border text-base font-semibold rounded-xl active:scale-95 transition-all`}
+                className={`h-11 ${isDark ? 'bg-[#19153b] hover:bg-[#231d52] text-white border-violet-500/30' : 'bg-slate-100 hover:bg-slate-200 text-slate-900 border-slate-200'} border text-base font-semibold rounded-xl active:scale-95 transition-all`}
               >
                 0
               </button>
@@ -224,7 +224,7 @@ export default function AuthModal({ onAuthenticated, onClose, theme }) {
               <button
                 type="button"
                 onClick={() => setPin(pin.slice(0, -1))}
-                className={`h-11 ${isDark ? 'bg-slate-800/40 text-slate-400' : 'bg-slate-50 text-slate-500'} text-xs font-medium rounded-xl`}
+                className={`h-11 ${isDark ? 'bg-[#19153b]/50 text-violet-400' : 'bg-slate-50 text-slate-500'} text-xs font-medium rounded-xl`}
               >
                 Del
               </button>
@@ -238,7 +238,7 @@ export default function AuthModal({ onAuthenticated, onClose, theme }) {
                   setPin('');
                   setErrorMessage('');
                 }}
-                className={`${isDark ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-900'}`}
+                className={`${isDark ? 'text-violet-400 hover:text-white' : 'text-slate-500 hover:text-slate-900'}`}
               >
                 Back
               </button>
@@ -247,7 +247,7 @@ export default function AuthModal({ onAuthenticated, onClose, theme }) {
                 type="button"
                 onClick={handleSubmitStep2}
                 disabled={loading || pin.length !== 4}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-medium disabled:opacity-50"
+                className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl font-medium disabled:opacity-50 shadow-md shadow-violet-950/40"
               >
                 {loading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : 'Proceed'}
               </button>

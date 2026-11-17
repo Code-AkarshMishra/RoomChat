@@ -45,7 +45,7 @@ export default function App() {
   };
 
   return (
-    <div className={`min-h-screen ${theme === 'dark' ? 'bg-slate-950 text-white' : 'bg-slate-50 text-slate-900'} select-none transition-colors`}>
+    <div className={`min-h-screen ${theme === 'dark' ? 'bg-[#0a081a] text-white' : 'bg-slate-50 text-slate-900'} select-none transition-colors overflow-hidden`}>
       {appMode === 'chat' && sessionUser ? (
         <ChatApp
           sessionUser={sessionUser}

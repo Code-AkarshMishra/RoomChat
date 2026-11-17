@@ -35,7 +35,8 @@ const initMemoryUsers = async () => {
     pinHash: p1PinHash,
     partnerId: p2Id,
     avatarUrl: null,
-    lastSeen: new Date(),
+    lastSeen: null,
+    lastLogin: null,
     vibeStatus: { emoji: '💖', text: 'Thinking of you', updatedAt: new Date() },
     failedLoginAttempts: 0,
     lockoutUntil: null,
@@ -48,7 +49,8 @@ const initMemoryUsers = async () => {
     pinHash: p2PinHash,
     partnerId: p1Id,
     avatarUrl: null,
-    lastSeen: new Date(),
+    lastSeen: null,
+    lastLogin: null,
     vibeStatus: { emoji: '✨', text: 'Online', updatedAt: new Date() },
     failedLoginAttempts: 0,
     lockoutUntil: null,
@@ -194,6 +196,20 @@ const loginStep2 = async (req, res) => {
       });
     }
 
+    const now = new Date();
+
+    // Update logging-in user's lastLogin and lastActive
+    if (mongoose.connection.readyState === 1) {
+      try {
+        await User.findOneAndUpdate({ userId: user.userId }, { lastLogin: now, lastActive: now });
+      } catch {}
+    }
+    if (memoryStore.users.has(user.userId)) {
+      const uMem = memoryStore.users.get(user.userId);
+      uMem.lastLogin = now;
+      uMem.lastActive = now;
+    }
+
     const sessionToken = jwt.sign(
       {
         userId: user.userId,
@@ -209,7 +225,7 @@ const loginStep2 = async (req, res) => {
     let partner = null;
     if (mongoose.connection.readyState === 1) {
       try {
-        partner = await User.findOne({ userId: user.partnerId }).select('userId displayName avatarUrl lastSeen vibeStatus');
+        partner = await User.findOne({ userId: user.partnerId }).select('userId displayName avatarUrl lastSeen lastLogin vibeStatus');
       } catch {
         partner = null;
       }
@@ -221,7 +237,8 @@ const loginStep2 = async (req, res) => {
         userId: p.userId,
         displayName: p.displayName,
         avatarUrl: p.avatarUrl || null,
-        lastSeen: p.lastSeen || new Date(),
+        lastSeen: p.lastSeen || null,
+        lastLogin: p.lastLogin || null,
         vibeStatus: p.vibeStatus,
       };
     }
@@ -234,15 +251,17 @@ const loginStep2 = async (req, res) => {
         displayName: user.displayName,
         avatarUrl: user.avatarUrl || null,
         partnerId: user.partnerId,
-        lastSeen: user.lastSeen || new Date(),
+        lastSeen: user.lastSeen || null,
+        lastLogin: now,
         vibeStatus: user.vibeStatus,
       },
       partner: partner || {
         userId: user.partnerId,
         displayName: 'Partner',
         avatarUrl: null,
-        lastSeen: new Date(),
-        vibeStatus: { emoji: '💖', text: 'Online' },
+        lastSeen: null,
+        lastLogin: null,
+        vibeStatus: { emoji: '💖', text: 'Offline' },
       },
     });
   } catch (error) {
@@ -283,15 +302,17 @@ const getProfile = async (req, res) => {
         userId: user?.userId || userId,
         displayName: user?.displayName || req.user.displayName,
         avatarUrl: user?.avatarUrl || null,
-        lastSeen: user?.lastSeen || new Date(),
+        lastSeen: user?.lastSeen || null,
+        lastLogin: user?.lastLogin || null,
         vibeStatus: user?.vibeStatus || { emoji: '💖', text: 'Active' },
       },
       partner: {
         userId: partner?.userId || partnerId,
         displayName: partner?.displayName || 'Partner',
         avatarUrl: partner?.avatarUrl || null,
-        lastSeen: partner?.lastSeen || new Date(),
-        vibeStatus: partner?.vibeStatus || { emoji: '💖', text: 'Active' },
+        lastSeen: partner?.lastSeen || null,
+        lastLogin: partner?.lastLogin || null,
+        vibeStatus: partner?.vibeStatus || { emoji: '💖', text: 'Offline' },
       },
     });
   } catch (error) {
